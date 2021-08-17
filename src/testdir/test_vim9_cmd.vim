@@ -13,7 +13,74 @@ def Test_vim9cmd()
     vim9cm assert_equal('yes', y)
   END
   CheckScriptSuccess(lines)
+
   assert_fails('vim9cmd', 'E1164:')
+  assert_fails('legacy', 'E1234:')
+  assert_fails('vim9cmd echo "con" . "cat"', 'E15:')
+
+  lines =<< trim END
+      let str = 'con'
+      vim9cmd str .= 'cat'
+  END
+  CheckScriptFailure(lines, 'E492:')
+
+  lines =<< trim END
+      vim9script
+      legacy echo "con" . "cat"
+      legacy let str = 'con'
+      legacy let str .= 'cat'
+  END
+  CheckScriptSuccess(lines)
+
+  lines =<< trim END
+      vim9script
+      def Foo()
+        g:found_bar = "bar"
+      enddef
+      nmap ,; :vim9cmd <SID>Foo()<CR>
+  END
+  CheckScriptSuccess(lines)
+
+  feedkeys(',;', 'xt')
+  assert_equal("bar", g:found_bar)
+  nunmap ,;
+  unlet g:found_bar
+
+  lines =<< trim END
+      vim9script
+      legacy echo 1'000
+  END
+  CheckScriptFailure(lines, 'E115:')
+
+  if has('float')
+    lines =<< trim END
+        vim9script
+        echo .10
+    END
+    CheckScriptSuccess(lines)
+    lines =<< trim END
+        vim9cmd echo .10
+    END
+    CheckScriptSuccess(lines)
+    lines =<< trim END
+        vim9script
+        legacy echo .10
+    END
+    CheckScriptFailure(lines, 'E15:')
+  endif
+
+  echo v:version
+  assert_fails('vim9cmd echo version', 'E121:')
+  lines =<< trim END
+      vim9script
+      echo version
+  END
+  CheckScriptFailure(lines, 'E121:')
+  lines =<< trim END
+      vim9script
+      legacy echo version
+  END
+  CheckScriptSuccess(lines)
 enddef
 
 def Test_edit_wildcards()
@@ -34,6 +101,10 @@ def Test_edit_wildcards()
 
   CheckDefFailure(['edit `=xxx`'], 'E1001:')
   CheckDefFailure(['edit `="foo"'], 'E1083:')
+
+  var files = ['file 1', 'file%2', 'file# 3']
+  args `=files`
+  assert_equal(files, argv())
 enddef
 
 def Test_expand_alternate_file()
@@ -530,6 +601,14 @@ def Test_command_modifier_filter()
     assert_equal(execute('filter /piyo/ registers abc'), expected)
   END
   CheckDefAndScriptSuccess(lines)
+
+  # also do this compiled
+  lines =<< trim END
+      @a = 'very specific z3d37dh234 string'
+      filter z3d37dh234 registers
+      assert_match('very specific z3d37dh234 string', Screenline(&lines))
+  END
+  CheckDefAndScriptSuccess(lines)
 enddef
 
 def Test_win_command_modifiers()
@@ -781,6 +860,17 @@ def Test_modifier_silent_unsilent()
     echomsg "caught"
   endtry
   assert_equal("\ncaught", execute(':1messages'))
+
+  var lines =<< trim END
+      vim9script
+      set history=11
+      silent! while 0
+        set history=22
+      silent! endwhile
+      assert_equal(11, &history)
+      set history&
+  END
+  CheckScriptSuccess(lines)
 enddef
 
 def Test_range_after_command_modifier()
@@ -810,13 +900,16 @@ def Test_useless_command_modifier()
       for i in [0]
       silent endfor
   END
-  CheckDefAndScriptFailure(lines, 'E1176:', 2)
+  CheckDefFailure(lines, 'E1176:', 2)
+  CheckScriptSuccess(['vim9script'] + lines)
 
   lines =<< trim END
       while g:maybe
       silent endwhile
   END
-  CheckDefAndScriptFailure(lines, 'E1176:', 2)
+  CheckDefFailure(lines, 'E1176:', 2)
+  g:maybe = false
+  CheckScriptSuccess(['vim9script'] + lines)
 
   lines =<< trim END
       silent try
@@ -1155,6 +1248,23 @@ def Test_lockvar()
   s:theList[1] = 44
   assert_equal([1, 44, 3], s:theList)
 
+  var d = {a: 1, b: 2}
+  d.a = 3
+  d.b = 4
+  assert_equal({a: 3, b: 4}, d)
+  lockvar d.a
+  d.b = 5
+  var ex = ''
+  try
+    d.a = 6
+  catch
+    ex = v:exception
+  endtry
+  assert_match('E1121:', ex)
+  unlockvar d.a
+  d.a = 7
+  assert_equal({a: 7, b: 5}, d)
+
   var lines =<< trim END
       vim9script
       var theList = [1, 2, 3]
@@ -1232,6 +1342,13 @@ def Test_substitute_expr()
   END
   CheckScriptSuccess(lines)
   unlet g:cond
+
+  # List results in multiple lines
+  new
+  setline(1, 'some text here')
+  s/text/\=['aaa', 'bbb', 'ccc']/
+  assert_equal(['some aaa', 'bbb', 'ccc', ' here'], getline(1, '$'))
+  bwipe!
 enddef
 
 def Test_redir_to_var()
@@ -1303,6 +1420,19 @@ def Test_echo_void()
       defcompile
   END
   CheckScriptFailure(lines, 'E1186:', 1)
+enddef
+
+def Test_cmdwin_block()
+  augroup justTesting
+    autocmd BufEnter * {
+      echomsg 'in block'
+    }
+  augroup END
+  feedkeys('q:', 'xt')
+  redraw
+  feedkeys("aclose\<CR>", 'xt')
+
+  au! justTesting
 enddef
 
 

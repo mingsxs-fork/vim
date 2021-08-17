@@ -1,4 +1,4 @@
-*vim9.txt*	For Vim version 8.2.  Last change: 2021 Apr 28
+*vim9.txt*	For Vim version 8.2.  Last change: 2021 Aug 11
 
 
 		  VIM REFERENCE MANUAL	  by Bram Moolenaar
@@ -101,7 +101,8 @@ script and `:def` functions; details are below:
 	def CallMe(count: number, message: string): bool
 - Call functions without `:call`: >
 	writefile(['done'], 'file.txt')
-- You cannot use `:xit`, `:t`, `:k`, `:append`, `:change`, `:insert`, `:open`
+- You cannot use `:xit`, `:t`, `:k`, `:append`, `:change`, `:insert`, `:open`,
+  and `:s` or `:d` with only flags.
   or curly-braces names.
 - A range before a command must be prefixed with a colon: >
 	:%s/this/that
@@ -167,6 +168,14 @@ created yet.  In this case you can call `execute()` to invoke it at runtime. >
 "closure".  A `:def` function always aborts on an error (unless `:silent!` was
 used for the command or inside a `:try` block), does not get a range passed
 cannot be a "dict" function, and can always be a closure.
+
+Later classes will be added, which replaces the "dict function" mechanism.
+For now you will need to pass the dictionary explicitly: >
+	def DictFunc(d: dict<any>, arg: string)
+	   echo d[arg]
+	enddef
+	var d = {item: 'value', func: DictFunc}
+	d.func(d, 'item')
 
 The argument types and return type need to be specified.  The "any" type can
 be used, type checking will then be done at runtime, like with legacy
@@ -312,6 +321,25 @@ used: >
 	}
 	echo temp  # Error!
 
+This is especially useful in a user command: >
+
+	command -range Rename {
+		 var save = @a
+		 @a = 'some expression'
+		 echo 'do something with ' .. @a
+		 @a = save
+	    }
+
+And with autocommands: >
+
+   au BufWritePre *.go {
+		 var save = winsaveview()
+		 silent! exe ':%! some formatting command'
+		 winrestview(save)
+	   }
+
+Although using a :def function probably works better.
+
 Declaring a variable with a type but without an initializer will initialize to
 zero, false or empty.
 
@@ -322,6 +350,9 @@ with `:unlet`.
 
 `:lockvar` does not work on local variables.  Use `:const` and `:final`
 instead.
+
+The `exists()` and `exists_compiled()` functions do not work on local variables
+or arguments.
 
 Variables, functions and function arguments cannot shadow previously defined
 or imported variables and functions in the same script file.
@@ -341,6 +372,32 @@ called without "g:". >
 	enddef
 	echo GlobalFunc()
 The "g:" prefix is not needed for auto-load functions.
+
+					*vim9-function-defined-later*
+Although global functions can be called without the "g:" prefix, they must
+exist when compiled.  By adding the "g:" prefix the function can be defined
+later.  Example: >
+	def CallPluginFunc()
+	  if exists('g:loaded_plugin')
+	    g:PluginFunc()
+	  endif
+	enddef
+
+If you would do it like this you get an error at compile time that
+"PluginFunc" does not exist, even when "g:loaded_plugin" does not exist: >
+	def CallPluginFunc()
+	  if exists('g:loaded_plugin')
+	    PluginFunc()   # Error - function not found
+	  endif
+	enddef
+
+You can use exists_compiled() to avoid the error, but then the function would
+not be called, even when "g:loaded_plugin" is defined later: >
+	def CallPluginFunc()
+	  if exists_compiled('g:loaded_plugin')
+	    PluginFunc()   # Function may never be called
+	  endif
+	enddef
 
 Since `&opt = value` is now assigning a value to option "opt", ":&" cannot be
 used to repeat a `:substitute` command.
@@ -417,6 +474,12 @@ line starts with `substitute(` this will use the function. Prepend a colon to
 use the command instead: >
 	:substitute(pattern (replacement (
 
+If the expression starts with "!" this is interpreted as a shell command, not
+negation of a condition.  Thus this is a shell command: >
+	!shellCommand->something
+Put the expression in parenthesis to use the "!" for negation: >
+	(!expression)->Method()
+
 Note that while variables need to be defined before they can be used,
 functions can be called before being defined.  This is required to allow
 for cyclic dependencies between functions.  It is slightly less efficient,
@@ -433,7 +496,8 @@ The function must already have been defined. >
 	var Funcref = MyFunction
 
 When using `function()` the resulting type is "func", a function with any
-number of arguments and any return type.  The function can be defined later.
+number of arguments and any return type (including void).  The function can be
+defined later.
 
 
 Lambda using => instead of -> ~
@@ -444,11 +508,12 @@ it is the start of a lambda or a dictionary, which is now more complicated
 because of the use of argument types.
 
 To avoid these problems Vim9 script uses a different syntax for a lambda,
-which is similar to Javascript: >
+which is similar to JavaScript: >
 	var Lambda = (arg) => expression
 
 No line break is allowed in the arguments of a lambda up to and including the
-"=>".  This is OK: >
+"=>" (so that Vim can tell the difference between an expression in parentheses
+and lambda arguments).  This is OK: >
 	filter(list, (k, v) =>
 			v > 0)
 This does not work: >
@@ -521,7 +586,7 @@ And when a dict spans multiple lines: >
 		one: 1,
 		two: 2,
 		}
-Function call: >
+With a function call: >
 	var result = Func(
 			arg1,
 			arg2
@@ -554,10 +619,36 @@ at the start of the line indicates line continuation: >
 		|   echo 'match'
 		| endif
 
-<							*E1050*
+Note that this means that in heredoc the first line cannot be a bar: >
+	var lines =<< trim END
+	   | this doesn't work
+	END
+Either use an empty line at the start or do not use heredoc.  Or temporarily
+add the "C" flag to 'cpoptions': >
+	set cpo+=C
+	var lines =<< trim END
+	   | this doesn't work
+	END
+	set cpo-=C
+If the heredoc is inside a function 'cpoptions' must be set before :def and
+restored after the :enddef.
+
+In places where line continuation with a backslash is still needed, such as
+splitting up a long Ex command, comments can start with '#\ ': >
+	syn region Text
+	      \ start='foo'
+	      #\ comment
+	      \ end='bar'
+Like with legacy script '"\ ' is used.  This is also needed when line
+continuation is used without a backslash and a line starts with a bar: >
+	au CursorHold * echom 'BEFORE bar'
+	      #\ some comment
+	      | echom 'AFTER bar'
+<
+							*E1050*
 To make it possible for the operator at the start of the line to be
-recognized, it is required to put a colon before a range.  This will add
-"start" and print: >
+recognized, it is required to put a colon before a range.  This example will
+add "start" and print: >
 	var result = start
 	+ print
 Like this: >
@@ -609,6 +700,9 @@ Notes:
 <  This does not work: >
 	echo [1, 2]
 		[3, 4]
+- In some cases it is difficult for Vim to parse a command, especially when
+  commands are used as an argument to another command, such as `windo`.  In
+  those cases the line continuation with a backslash has to be used.
 
 
 White space ~
@@ -646,6 +740,9 @@ White space is not allowed:
 	Func(
 	      arg	   # OK
 	      )
+
+White space space is not allowed in a `:set` command between the option name
+and a following "&", "!", "<", "=", "+=", "-=" or "^=".
 
 
 No curly braces expansion ~
@@ -869,7 +966,8 @@ evaluates to false: >
 	    use-feature
 	  endif
 	enddef
-<							*vim9-user-command*
+The `exists_compiled()` function can also be used for this.
+							*vim9-user-command*
 Another side effect of compiling a function is that the presence of a user
 command is checked at compile time.  If the user command is defined later an
 error will result.  This works: >
@@ -902,6 +1000,16 @@ The 'gdefault' option value is not used.
 
 You may also find this wiki useful.  It was written by an early adopter of
 Vim9 script: https://github.com/lacygoill/wiki/blob/master/vim/vim9.md
+
+							*:++* *:--*
+The ++ and -- commands have been added.  They are very similar to adding or
+subtracting one: >
+		++var
+		var += 1
+		--var
+		var -= 1
+
+Using ++var or --var in an expression is not supported yet.
 
 ==============================================================================
 
@@ -965,8 +1073,13 @@ prefix if they do not exist at the time of compiling.
 			Note that for command line completion of {func} you
 			can prepend "s:" to find script-local functions.
 
-:disa[ssemble]! {func}	Like `:disassemble` but with the instructions used for
+:disa[ssemble] profile {func}
+			Like `:disassemble` but with the instructions used for
 			profiling.
+
+:disa[ssemble] debug {func}
+			Like `:disassemble` but with the instructions used for
+			debugging.
 
 Limitations ~
 
@@ -990,26 +1103,36 @@ For these the backtick expansion can be used.  Example: >
 	  g/pattern/s/^/`=newText`/
 	enddef
 
+Or a script variable can be used: >
+	var newText = 'blah'
+	def Replace()
+	  g/pattern/s/^/\=newText/
+	enddef
+
 Closures defined in a loop will share the same context.  For example: >
 	var flist: list<func>
-	for i in range(10)
+	for i in range(5)
 	  var inloop = i
 	  flist[i] = () => inloop
 	endfor
+	echo range(5)->map((i, _) => flist[i]())
+	# Result: [4, 4, 4, 4, 4]
 
 The "inloop" variable will exist only once, all closures put in the list refer
-to the same instance, which in the end will have the value 9.  This is
-efficient.  If you do want a separate context for each closure call a function
-to define it: >
-	def GetFunc(i: number): func
-	  var inloop = i
-	  return () => inloop
+to the same instance, which in the end will have the value 4.  This is
+efficient, also when looping many times.  If you do want a separate context
+for each closure call a function to define it: >
+	def GetClosure(i: number): func
+	  var infunc = i
+	  return () => infunc
 	enddef
 
 	var flist: list<func>
-	for i in range(10)
-	  flist[i] = GetFunc(i)
+	for i in range(5)
+	  flist[i] = GetClosure(i)
 	endfor
+	echo range(5)->map((i, _) => flist[i]())
+	# Result: [0, 1, 2, 3, 4]
 
 ==============================================================================
 
@@ -1035,10 +1158,8 @@ The following builtin types are supported:
 Not supported yet:
 	tuple<a: {type}, b: {type}, ...>
 
-These types can be used in declarations, but no value will have this type:
-	{type}|{type}  {not implemented yet}
-	void
-	any
+These types can be used in declarations, but no simple value will actually
+have the "void" type.
 
 There is no array type, use list<{type}> instead.  For a list constant an
 efficient implementation is used that avoids allocating lot of small pieces of
@@ -1047,8 +1168,16 @@ memory.
 A partial and function can be declared in more or less specific ways:
 func				any kind of function reference, no type
 				checking for arguments or return value
+func: void			any number and type of arguments, no return
+				value
 func: {type}			any number and type of arguments with specific
 				return type
+
+func()				function with no argument, does not return a
+				value
+func(): void			same
+func(): {type}			function with no argument and return type
+
 func({type})			function with argument type, does not return
 				a value
 func({type}): {type}		function with argument type and return type
@@ -1137,6 +1266,18 @@ dictionary.  If there is a mix of types, the "any" type is used. >
 	['a', 'b', 'c']	list<string>
 	[1, 'x', 3]	list<any>
 
+The common type of function references, if they do not all have the same
+number of arguments, uses "(...)" to indicate the number of arguments is not
+specified.  For example: >
+	def Foo(x: bool)
+	enddef
+	def Bar(x: bool, y: bool)
+	enddef
+	var funclist = [Foo, Bar]
+	echo funclist->typename()
+Results in:
+	list<func(...)>
+
 For script-local variables in Vim9 script the type is checked, also when the
 variable was declared in a legacy function.
 
@@ -1153,16 +1294,24 @@ In Vim9 script this has been made stricter.  In most places it works just as
 before, if the value used matches the expected type.  There will sometimes be
 an error, thus breaking backwards compatibility.  For example:
 - Using a number other than 0 or 1 where a boolean is expected.  *E1023*
-- Using a string value when setting a number options.
+- Using a string value when setting a number option.
 - Using a number where a string is expected.   *E1024*
 
 One consequence is that the item type of a list or dict given to map() must
 not change.  This will give an error in Vim9 script: >
-	map([1, 2, 3], (i, v) => 'item ' .. i)
+	vim9 echo map([1, 2, 3], (i, v) => 'item ' .. i)
 	E1012: Type mismatch; expected number but got string
-Instead use |mapnew()|.  If the item type was determined to be "any" it can
-change to a more specific type.  E.g. when a list of mixed types gets changed
-to a list of numbers.
+Instead use |mapnew(): >
+	vim9 echo mapnew([1, 2, 3], (i, v) => 'item ' .. i)
+	['item 0', 'item 1', 'item 2']
+
+If the item type was determined to be "any" it can change to a more specific
+type.  E.g. when a list of mixed types gets changed to a list of numbers: >
+	var mylist = [1, 2.0, '3']
+	# typename(mylist) == "list<any>"
+	map(mylist, (i, v) => 'item ' .. i)
+	# typename(mylist) == "list<string>", no error
+
 Same for |extend()|, use |extendnew()| instead, and for |flatten()|, use
 |flattennew()| instead.
 
@@ -1239,9 +1388,10 @@ Exporting an item can be written as: >
 	export const someValue = ...
 	export def MyFunc() ...
 	export class MyClass ...
+	export interface MyClass ...
 
 As this suggests, only constants, variables, `:def` functions and classes can
-be exported. {not implemented yet: export class}
+be exported. {not implemented yet: class, interface}
 
 							*E1042*
 `:export` can only be used in Vim9 script, at the script level.
@@ -1272,6 +1422,9 @@ script file to avoid confusion.
 `:import` can also be used in legacy Vim script.  The imported items still
 become script-local, even when the "s:" prefix is not given.
 
+`:import` can not be used in a function.  Imported items are intended to exist
+at the script level and only imported once.
+
 The script name after `import` can be:
 - A relative path, starting "." or "..".  This finds a file relative to the
   location of the script file itself.  This is useful to split up a large
@@ -1281,6 +1434,7 @@ The script name after `import` can be:
 - A path not being relative or absolute.  This will be found in the
   "import" subdirectories of 'runtimepath' entries.  The name will usually be
   longer and unique, to avoid loading the wrong file.
+  Note that "after/import" is not used.
 
 Once a vim9 script file has been imported, the result is cached and used the
 next time the same script is imported.  It will not be read again.
@@ -1341,26 +1495,45 @@ implementing classes is going to be a lot of work, it is left for the future.
 For now we'll just make sure classes can be added later.
 
 Thoughts:
-- `class` / `endclass`, everything in one file
-- Class names are always CamelCase
-- Single constructor
+- `class` / `endclass`, the whole class must be in one file
+- Class names are always CamelCase (to avoid a name clash with builtin types)
+- A single constructor called "constructor"
 - Single inheritance with `class ThisClass extends BaseClass`
-- `abstract class`
-- `interface` (Abstract class without any implementation)
+- `abstract class` (class with incomplete implementation)
+- `interface` / `endinterface` (abstract class without any implementation)
 - `class SomeClass implements SomeInterface`
 - Generics for class: `class <Tkey, Tentry>`
 - Generics for function: `def <Tkey> GetLast(key: Tkey)`
 
-Again, much of this is from TypeScript.
+Again, much of this is from TypeScript with a slightly different syntax.
 
 Some things that look like good additions:
 - Use a class as an interface (like Dart)
 - Extend a class with methods, using an import (like Dart)
+- Mixins
+- For testing: Mock mechanism
 
 An important class that will be provided is "Promise".  Since Vim is single
 threaded, connecting asynchronous operations is a natural way of allowing
 plugins to do their work without blocking the user.  It's a uniform way to
 invoke callbacks and handle timeouts and errors.
+
+Some examples: >
+
+	abstract class Person 
+	    static const prefix = 'xxx'
+	    var name: string
+	    
+	    def constructor(name: string)
+		this.name = name
+	    enddef
+
+	    def display(): void
+		echo name
+	    enddef
+
+	    abstract def find(string): Person
+	endclass
 
 ==============================================================================
 
@@ -1550,7 +1723,7 @@ functions return these values.
 
 If you have any type of value and want to use it as a boolean, use the `!!`
 operator:
-	true: !`!'text'`, `!![99]`, `!!{'x': 1}`, `!!99`
+	true: `!!'text'`, `!![99]`, `!!{'x': 1}`, `!!99`
 	false: `!!''`, `!![]`, `!!{}`
 
 From a language like JavaScript we have this handy construct: >

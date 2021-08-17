@@ -24,7 +24,11 @@ static char *(p_bo_values[]) = {"all", "backspace", "cursor", "complete",
 static char *(p_nf_values[]) = {"bin", "octal", "hex", "alpha", "unsigned", NULL};
 static char *(p_ff_values[]) = {FF_UNIX, FF_DOS, FF_MAC, NULL};
 #ifdef FEAT_CRYPT
-static char *(p_cm_values[]) = {"zip", "blowfish", "blowfish2", NULL};
+static char *(p_cm_values[]) = {"zip", "blowfish", "blowfish2",
+ # ifdef FEAT_SODIUM
+    "xchacha20",
+ # endif
+    NULL};
 #endif
 static char *(p_cmp_values[]) = {"internal", "keepascii", NULL};
 static char *(p_dy_values[]) = {"lastline", "truncate", "uhex", NULL};
@@ -52,7 +56,7 @@ static char *(p_tbis_values[]) = {"tiny", "small", "medium", "large", "huge", "g
 #if defined(UNIX) || defined(VMS)
 static char *(p_ttym_values[]) = {"xterm", "xterm2", "dec", "netterm", "jsbterm", "pterm", "urxvt", "sgr", NULL};
 #endif
-static char *(p_ve_values[]) = {"block", "insert", "all", "onemore", NULL};
+static char *(p_ve_values[]) = {"block", "insert", "all", "onemore", "none", "NONE", NULL};
 static char *(p_wop_values[]) = {"tagfile", NULL};
 #ifdef FEAT_WAK
 static char *(p_wak_values[]) = {"yes", "menu", "no", NULL};
@@ -967,7 +971,7 @@ ambw_end:
 	if (gvarp == &p_fenc)
 	{
 	    if (!curbuf->b_p_ma && opt_flags != OPT_GLOBAL)
-		errmsg = e_modifiable;
+		errmsg = e_cannot_make_changes_modifiable_is_off;
 	    else if (vim_strchr(*varp, ',') != NULL)
 		// No comma allowed in 'fileencoding'; catches confusing it
 		// with 'fileencodings'.
@@ -1126,7 +1130,7 @@ ambw_end:
     else if (gvarp == &p_ff)
     {
 	if (!curbuf->b_p_ma && !(opt_flags & OPT_GLOBAL))
-	    errmsg = e_modifiable;
+	    errmsg = e_cannot_make_changes_modifiable_is_off;
 	else if (check_opt_strings(*varp, p_ff_values, FALSE) != OK)
 	    errmsg = e_invarg;
 	else
@@ -2071,16 +2075,31 @@ ambw_end:
 #endif
 
     // 'virtualedit'
-    else if (varp == &p_ve)
+    else if (gvarp == &p_ve)
     {
-	if (opt_strings_flags(p_ve, p_ve_values, &ve_flags, TRUE) != OK)
-	    errmsg = e_invarg;
-	else if (STRCMP(p_ve, oldval) != 0)
+	char_u		*ve = p_ve;
+	unsigned int	*flags = &ve_flags;
+
+	if (opt_flags & OPT_LOCAL)
 	{
-	    // Recompute cursor position in case the new 've' setting
-	    // changes something.
-	    validate_virtcol();
-	    coladvance(curwin->w_virtcol);
+	    ve = curwin->w_p_ve;
+	    flags = &curwin->w_ve_flags;
+	}
+
+	if ((opt_flags & OPT_LOCAL) && *ve == NUL)
+	    // make the local value empty: use the global value
+	    *flags = 0;
+	else
+	{
+	    if (opt_strings_flags(ve, p_ve_values, flags, TRUE) != OK)
+		errmsg = e_invarg;
+	    else if (STRCMP(p_ve, oldval) != 0)
+	    {
+		// Recompute cursor position in case the new 've' setting
+		// changes something.
+		validate_virtcol();
+		coladvance(curwin->w_virtcol);
+	    }
 	}
     }
 

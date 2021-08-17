@@ -588,12 +588,12 @@ check_mark(pos_T *pos)
 	// lnum is negative if mark is in another file can can't get that
 	// file, error message already give then.
 	if (pos->lnum == 0)
-	    emsg(_(e_marknotset));
+	    emsg(_(e_mark_not_set));
 	return FAIL;
     }
     if (pos->lnum > curbuf->b_ml.ml_line_count)
     {
-	emsg(_(e_markinval));
+	emsg(_(e_mark_has_invalid_line_number));
 	return FAIL;
     }
     return OK;
@@ -1508,6 +1508,9 @@ f_getmarklist(typval_T *argvars, typval_T *rettv)
     buf_T	*buf = NULL;
 
     if (rettv_list_alloc(rettv) != OK)
+	return;
+
+    if (in_vim9script() && check_for_opt_buffer_arg(argvars, 0) == FAIL)
 	return;
 
     if (argvars[0].v_type == VAR_UNKNOWN)

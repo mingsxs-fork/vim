@@ -230,6 +230,14 @@ func Test_saveas()
   close!
   enew | only
   call delete('Xfile')
+
+  " :saveas should detect and set the file type.
+  syntax on
+  saveas! Xsaveas.pl
+  call assert_equal('perl', &filetype)
+  syntax off
+  %bw!
+  call delete('Xsaveas.pl')
 endfunc
 
 func Test_write_errors()
@@ -501,7 +509,7 @@ func Test_write_file_encoding()
   CheckMSWindows
   let save_encoding = &encoding
   let save_fileencodings = &fileencodings
-  set encoding& fileencodings&
+  set encoding=latin1 fileencodings&
   let text =<< trim END
     1 utf-8 text: Ð”Ð»Ñ Vim version 6.2.  ÐŸÐ¾ÑÐ»ÐµÐ´Ð½ÐµÐµ Ð¸Ð·Ð¼ÐµÐ½ÐµÐ½Ð¸Ðµ: 1970 Jan 01
     2 cp1251 text: Äëÿ Vim version 6.2.  Ïîñëåäíåå èçìåíåíèå: 1970 Jan 01
@@ -913,6 +921,27 @@ func Test_write_binary_file()
   call delete('Xfile1')
   call delete('Xfile2')
   call delete('Xfile3')
+endfunc
+
+" Check that buffer is written before triggering QuitPre
+func Test_wq_quitpre_autocommand()
+  edit Xsomefile
+  call setline(1, 'hello')
+  split
+  let g:seq = []
+  augroup Testing
+    au QuitPre * call add(g:seq, 'QuitPre - ' .. (&modified ? 'modified' : 'not modified'))
+    au BufWritePost * call add(g:seq, 'written')
+  augroup END
+  wq
+  call assert_equal(['written', 'QuitPre - not modified'], g:seq)
+
+  augroup Testing
+    au!
+  augroup END
+  bwipe!
+  unlet g:seq
+  call delete('Xsomefile')
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

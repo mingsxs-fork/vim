@@ -127,7 +127,11 @@ typedef enum {
 #define ENC_UCSBOM	"ucs-bom"	// check for BOM at start of file
 
 // default value for 'encoding'
-#define ENC_DFLT	"latin1"
+#ifdef MSWIN
+# define ENC_DFLT	"utf-8"
+#else
+# define ENC_DFLT	"latin1"
+#endif
 
 // end-of-line style
 #define EOL_UNKNOWN	-1	// not defined yet
@@ -1048,6 +1052,8 @@ EXTERN unsigned ve_flags;
 #define VE_INSERT	6	// includes "all"
 #define VE_ALL		4
 #define VE_ONEMORE	8
+#define VE_NONE		16	// "none"
+#define VE_NONEU	32      // "NONE"
 EXTERN long	p_verbose;	// 'verbose'
 #ifdef IN_OPTION_C
 char_u	*p_vfile = (char_u *)""; // used before options are initialized
@@ -1224,6 +1230,7 @@ enum
     , BV_VSTS
     , BV_VTS
 #endif
+    , BV_VE
     , BV_COUNT	    // must be the last one
 };
 

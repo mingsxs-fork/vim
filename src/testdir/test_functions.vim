@@ -4,6 +4,7 @@ source shared.vim
 source check.vim
 source term_util.vim
 source screendump.vim
+source vim9.vim
 
 " Must be done first, since the alternate buffer must be unset.
 func Test_00_bufexists()
@@ -85,13 +86,18 @@ func Test_empty()
 endfunc
 
 func Test_test_void()
-  call assert_fails('echo 1 == test_void()', 'E685:')
+  call assert_fails('echo 1 == test_void()', 'E1031:')
   if has('float')
-    call assert_fails('echo 1.0 == test_void()', 'E685:')
+    call assert_fails('echo 1.0 == test_void()', 'E1031:')
   endif
   call assert_fails('let x = json_encode(test_void())', 'E685:')
   call assert_fails('let x = copy(test_void())', 'E685:')
-  call assert_fails('let x = copy([test_void()])', 'E685:')
+  call assert_fails('let x = copy([test_void()])', 'E1031:')
+endfunc
+
+func Test_islocked()
+  call assert_fails('call islocked(99)', 'E475:')
+  call assert_fails('call islocked("s: x")', 'E488:')
 endfunc
 
 func Test_len()
@@ -164,10 +170,12 @@ func Test_strwidth()
     call assert_fails('call strwidth({->0})', 'E729:')
     call assert_fails('call strwidth([])', 'E730:')
     call assert_fails('call strwidth({})', 'E731:')
-    if has('float')
-      call assert_fails('call strwidth(1.2)', 'E806:')
-    endif
   endfor
+
+  if has('float')
+    call assert_equal(3, strwidth(1.2))
+    call CheckDefAndScriptFailure2(['echo strwidth(1.2)'], 'E1013: Argument 1: type mismatch, expected string but got float', 'E1174: String required for argument 1')
+  endif
 
   set ambiwidth&
 endfunc
@@ -232,7 +240,8 @@ func Test_str2nr()
   call assert_fails('call str2nr([])', 'E730:')
   call assert_fails('call str2nr({->2})', 'E729:')
   if has('float')
-    call assert_fails('call str2nr(1.2)', 'E806:')
+    call assert_equal(1, str2nr(1.2))
+    call CheckDefAndScriptFailure2(['echo str2nr(1.2)'], 'E1013: Argument 1: type mismatch, expected string but got float', 'E1174: String required for argument 1')
   endif
   call assert_fails('call str2nr(10, [])', 'E745:')
 endfunc
@@ -493,7 +502,8 @@ func Test_simplify()
   call assert_fails('call simplify([])', 'E730:')
   call assert_fails('call simplify({})', 'E731:')
   if has('float')
-    call assert_fails('call simplify(1.2)', 'E806:')
+    call assert_equal('1.2', simplify(1.2))
+    call CheckDefAndScriptFailure2(['echo simplify(1.2)'], 'E1013: Argument 1: type mismatch, expected string but got float', 'E1174: String required for argument 1')
   endif
 endfunc
 
@@ -736,6 +746,7 @@ func Test_mode()
   set complete=.
 
   inoremap <F2> <C-R>=Save_mode()<CR>
+  xnoremap <F2> <Cmd>call Save_mode()<CR>
 
   normal! 3G
   exe "normal i\<F2>\<Esc>"
@@ -847,6 +858,14 @@ func Test_mode()
   call assert_equal("\<C-S>", mode(1))
   call feedkeys("\<Esc>", 'xt')
 
+  " v_CTRL-O
+  exe "normal gh\<C-O>\<F2>\<Esc>"
+  call assert_equal("v-vs", g:current_modes)
+  exe "normal gH\<C-O>\<F2>\<Esc>"
+  call assert_equal("V-Vs", g:current_modes)
+  exe "normal g\<C-H>\<C-O>\<F2>\<Esc>"
+  call assert_equal("\<C-V>-\<C-V>s", g:current_modes)
+
   call feedkeys(":echo \<C-R>=Save_mode()\<C-U>\<CR>", 'xt')
   call assert_equal('c-c', g:current_modes)
   call feedkeys("gQecho \<C-R>=Save_mode()\<CR>\<CR>vi\<CR>", 'xt')
@@ -857,6 +876,7 @@ func Test_mode()
 
   bwipe!
   iunmap <F2>
+  xunmap <F2>
   set complete&
 endfunc
 
@@ -1305,6 +1325,9 @@ func Test_Executable()
     if catcmd =~ '\<sbin\>' && result =~ '\<bin\>'
       call assert_equal('/' .. substitute(catcmd, '\<sbin\>', 'bin', ''), result)
     else
+      " /bin/cat and /usr/bin/cat may be hard linked, we could get either
+      let result = substitute(result, '/usr/bin/cat', '/bin/cat', '')
+      let catcmd = substitute(catcmd, 'usr/bin/cat', 'bin/cat', '')
       call assert_equal('/' .. catcmd, result)
     endif
     bwipe
@@ -1573,31 +1596,6 @@ func Test_redo_in_nested_functions()
   delfunc Apply
 endfunc
 
-func Test_shellescape()
-  let save_shell = &shell
-  set shell=bash
-  call assert_equal("'text'", shellescape('text'))
-  call assert_equal("'te\"xt'", 'te"xt'->shellescape())
-  call assert_equal("'te'\\''xt'", shellescape("te'xt"))
-
-  call assert_equal("'te%xt'", shellescape("te%xt"))
-  call assert_equal("'te\\%xt'", shellescape("te%xt", 1))
-  call assert_equal("'te#xt'", shellescape("te#xt"))
-  call assert_equal("'te\\#xt'", shellescape("te#xt", 1))
-  call assert_equal("'te!xt'", shellescape("te!xt"))
-  call assert_equal("'te\\!xt'", shellescape("te!xt", 1))
-
-  call assert_equal("'te\nxt'", shellescape("te\nxt"))
-  call assert_equal("'te\\\nxt'", shellescape("te\nxt", 1))
-  set shell=tcsh
-  call assert_equal("'te\\!xt'", shellescape("te!xt"))
-  call assert_equal("'te\\\\!xt'", shellescape("te!xt", 1))
-  call assert_equal("'te\\\nxt'", shellescape("te\nxt"))
-  call assert_equal("'te\\\\\nxt'", shellescape("te\nxt", 1))
-
-  let &shell = save_shell
-endfunc
-
 func Test_trim()
   call assert_equal("Testing", trim("  \t\r\r\x0BTesting  \t\n\r\n\t\x0B\x0B"))
   call assert_equal("Testing", "  \t  \r\r\n\n\x0BTesting  \t\n\r\n\t\x0B\x0B"->trim())
@@ -1723,6 +1721,13 @@ endfunc
 func Test_getchar()
   call feedkeys('a', '')
   call assert_equal(char2nr('a'), getchar())
+  call assert_equal(0, getchar(0))
+  call assert_equal(0, getchar(1))
+
+  call feedkeys('a', '')
+  call assert_equal('a', getcharstr())
+  call assert_equal('', getcharstr(0))
+  call assert_equal('', getcharstr(1))
 
   call setline(1, 'xxxx')
   call test_setmouse(1, 3)
@@ -2161,9 +2166,11 @@ func Test_call()
   call assert_fails("call call('Mylen', [], 0)", 'E715:')
   call assert_fails('call foo', 'E107:')
 
-  " This once caused a crash.
+  " These once caused a crash.
   call call(test_null_function(), [])
   call call(test_null_partial(), [])
+  call assert_fails('call test_null_function()()', 'E1192:')
+  call assert_fails('call test_null_partial()()', 'E117:')
 endfunc
 
 func Test_char2nr()
@@ -2179,6 +2186,8 @@ func Test_charclass()
   call assert_equal(1, charclass('.'))
   call assert_equal(2, charclass('x'))
   call assert_equal(3, charclass("\u203c"))
+  " this used to crash vim
+  call assert_equal(0, "xxx"[-1]->charclass())
 endfunc
 
 func Test_eventhandler()
@@ -2680,5 +2689,23 @@ endfunc
 func Test_gettext()
   call assert_fails('call gettext(1)', 'E475:')
 endfunc
+
+func Test_builtin_check()
+  call assert_fails('let g:["trim"] = {x -> " " .. x}', 'E704:')
+  call assert_fails('let g:.trim = {x -> " " .. x}', 'E704:')
+  call assert_fails('let l:["trim"] = {x -> " " .. x}', 'E704:')
+  call assert_fails('let l:.trim = {x -> " " .. x}', 'E704:')
+  let lines =<< trim END
+    vim9script
+    var s:trim = (x) => " " .. x
+  END
+  call CheckScriptFailure(lines, 'E704:')
+
+  call assert_fails('call extend(g:, #{foo: { -> "foo" }})', 'E704:')
+  let g:bar = 123
+  call extend(g:, #{bar: { -> "foo" }}, "keep")
+  call assert_fails('call extend(g:, #{bar: { -> "foo" }}, "force")', 'E704:')
+endfunc
+
 
 " vim: shiftwidth=2 sts=2 expandtab

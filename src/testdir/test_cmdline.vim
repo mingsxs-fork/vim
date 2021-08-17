@@ -475,6 +475,7 @@ func Test_fullcommand()
   for [in, want] in items(tests)
     call assert_equal(want, fullcommand(in))
   endfor
+  call assert_equal('', fullcommand(test_null_string()))
 
   call assert_equal('syntax', 'syn'->fullcommand())
 endfunc
@@ -656,6 +657,11 @@ func Test_cmdline_complete_user_func()
   " g: prefix also works
   call feedkeys(":echo g:Test_cmdline_complete_user_f\<Tab>\<Home>\"\<cr>", 'tx')
   call assert_match('"echo g:Test_cmdline_complete_user_func', @:)
+
+  " using g: prefix does not result in just "g:" matches from a lambda
+  let Fx = { a ->  a }
+  call feedkeys(":echo g:\<Tab>\<Home>\"\<cr>", 'tx')
+  call assert_match('"echo g:[A-Z]', @:)
 endfunc
 
 func Test_cmdline_complete_user_names()
@@ -803,6 +809,22 @@ func Test_cmdline_complete_various()
   call feedkeys(":topleft new\<C-A>\<C-B>\"\<CR>", 'xt')
   call assert_equal("\"topleft new", @:)
 
+  " completion for vim9 and legacy commands
+  call feedkeys(":vim9 call strle\<C-A>\<C-B>\"\<CR>", 'xt')
+  call assert_equal("\"vim9 call strlen(", @:)
+  call feedkeys(":legac call strle\<C-A>\<C-B>\"\<CR>", 'xt')
+  call assert_equal("\"legac call strlen(", @:)
+
+  " completion for the :disassemble command
+  call feedkeys(":disas deb\<C-A>\<C-B>\"\<CR>", 'xt')
+  call assert_equal("\"disas debug", @:)
+  call feedkeys(":disas pro\<C-A>\<C-B>\"\<CR>", 'xt')
+  call assert_equal("\"disas profile", @:)
+  call feedkeys(":disas debug Test_cmdline_complete_var\<C-A>\<C-B>\"\<CR>", 'xt')
+  call assert_equal("\"disas debug Test_cmdline_complete_various", @:)
+  call feedkeys(":disas profile Test_cmdline_complete_var\<C-A>\<C-B>\"\<CR>", 'xt')
+  call assert_equal("\"disas profile Test_cmdline_complete_various", @:)
+
   " completion for the :match command
   call feedkeys(":match Search /pat/\<C-A>\<C-B>\"\<CR>", 'xt')
   call assert_equal("\"match Search /pat/\<C-A>", @:)
@@ -822,6 +844,14 @@ func Test_cmdline_complete_various()
   " completion of autocmd group after comma
   call feedkeys(":doautocmd BufNew,BufEn\<C-A>\<C-B>\"\<CR>", 'xt')
   call assert_equal("\"doautocmd BufNew,BufEnter", @:)
+
+  " completion of file name in :doautocmd
+  call writefile([], 'Xfile1')
+  call writefile([], 'Xfile2')
+  call feedkeys(":doautocmd BufEnter Xfi\<C-A>\<C-B>\"\<CR>", 'xt')
+  call assert_equal("\"doautocmd BufEnter Xfile1 Xfile2", @:)
+  call delete('Xfile1')
+  call delete('Xfile2')
 
   " completion for the :augroup command
   augroup XTest
@@ -1191,6 +1221,21 @@ func Test_cmdwin_restore()
   call delete('XTest_restore')
 endfunc
 
+func Test_cmdwin_no_terminal()
+  CheckFeature cmdwin
+  CheckFeature terminal
+  CheckNotMSWindows
+
+  let buf = RunVimInTerminal('', {'rows': 12})
+  call TermWait(buf, 50)
+  call term_sendkeys(buf, ":set cmdheight=2\<CR>")
+  call term_sendkeys(buf, "q:")
+  call term_sendkeys(buf, ":let buf = term_start(['/bin/echo'], #{hidden: 1})\<CR>")
+  call VerifyScreenDump(buf, 'Test_cmdwin_no_terminal', {})
+  call term_sendkeys(buf, ":q\<CR>")
+  call StopVimInTerminal(buf)
+endfunc
+
 func Test_buffers_lastused()
   " check that buffers are sorted by time when wildmode has lastused
   call test_settime(1550020000)	  " middle
@@ -1377,6 +1422,10 @@ func Test_cmd_backtick()
   %argd
   argadd `=['a', 'b', 'c']`
   call assert_equal(['a', 'b', 'c'], argv())
+  %argd
+
+  argadd `echo abc def`
+  call assert_equal(['abc def'], argv())
   %argd
 endfunc
 

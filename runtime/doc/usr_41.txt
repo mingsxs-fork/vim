@@ -1,4 +1,4 @@
-*usr_41.txt*	For Vim version 8.2.  Last change: 2021 Apr 19
+*usr_41.txt*	For Vim version 8.2.  Last change: 2021 Aug 08
 
 		     VIM USER MANUAL - by Bram Moolenaar
 
@@ -952,6 +952,7 @@ Interactive:					*interactive-functions*
 	browsedir()		put up a directory requester
 	confirm()		let the user make a choice
 	getchar()		get a character from the user
+	getcharstr()		get a character from the user as a string
 	getcharmod()		get modifiers for the last typed character
 	getmousepos()		get last known mouse position
 	echoraw()		output characters as-is
@@ -993,6 +994,10 @@ Window size and position:			*window-size-functions*
 	winrestview()		restore saved view of current window
 
 Mappings and Menus:			    *mapping-functions*
+	digraph_get()		get |digraph|
+	digraph_getlist()	get all |digraph|s
+	digraph_set()		register |digraph|
+	digraph_setlist()	register multiple |digraph|s
 	hasmapto()		check if a mapping exists
 	mapcheck()		check if a matching mapping exists
 	maparg()		get rhs of a mapping
@@ -1020,6 +1025,8 @@ Testing:				    *test-functions*
 	test_garbagecollect_now()   free memory right now
 	test_garbagecollect_soon()  set a flag to free memory soon
 	test_getvalue()		get value of an internal variable
+	test_gui_drop_files()	drop file(s) in a window
+	test_gui_mouse_event()	add a GUI mouse event to the input buffer
 	test_ignore_error()	ignore a specific error message
 	test_null_blob()	return a null Blob
 	test_null_channel()	return a null Channel
@@ -1154,6 +1161,7 @@ Prompt Buffer:					*promptbuffer-functions*
 
 Text Properties:				*text-property-functions*
 	prop_add()		attach a property at a position
+	prop_add_list()		attach a property at multiple positions
 	prop_clear()		remove all properties from a line or lines
 	prop_find()		search for a property
 	prop_list()		return a list of all properties in a line
@@ -1175,6 +1183,7 @@ Various:					*various-functions*
 	state()			get current busy state
 	visualmode()		last visual mode used
 	exists()		check if a variable, function, etc. exists
+	exists_compiled()	like exists() but check at compile time
 	has()			check if a feature is supported in Vim
 	changenr()		return number of most recent change
 	cscope_connection()	check if a cscope connection exists

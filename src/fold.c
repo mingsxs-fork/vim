@@ -1762,7 +1762,7 @@ foldCreateMarkers(linenr_T start, linenr_T end)
 {
     if (!curbuf->b_p_ma)
     {
-	emsg(_(e_modifiable));
+	emsg(_(e_cannot_make_changes_modifiable_is_off));
 	return;
     }
     parseMarker(curwin);
@@ -3658,6 +3658,9 @@ foldclosed_both(
     linenr_T	lnum;
     linenr_T	first, last;
 
+    if (in_vim9script() && check_for_lnum_arg(argvars, 0) == FAIL)
+	return;
+
     lnum = tv_get_lnum(argvars);
     if (lnum >= 1 && lnum <= curbuf->b_ml.ml_line_count)
     {
@@ -3700,6 +3703,9 @@ f_foldlevel(typval_T *argvars UNUSED, typval_T *rettv UNUSED)
 {
 # ifdef FEAT_FOLDING
     linenr_T	lnum;
+
+    if (in_vim9script() && check_for_lnum_arg(argvars, 0) == FAIL)
+	return;
 
     lnum = tv_get_lnum(argvars);
     if (lnum >= 1 && lnum <= curbuf->b_ml.ml_line_count)
@@ -3789,6 +3795,10 @@ f_foldtextresult(typval_T *argvars UNUSED, typval_T *rettv)
 
     rettv->v_type = VAR_STRING;
     rettv->vval.v_string = NULL;
+
+    if (in_vim9script() && check_for_lnum_arg(argvars, 0) == FAIL)
+	return;
+
 # ifdef FEAT_FOLDING
     if (entered)
 	return; // reject recursive use

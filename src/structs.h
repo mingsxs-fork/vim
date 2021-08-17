@@ -231,6 +231,10 @@ typedef struct
 #define w_p_nu w_onebuf_opt.wo_nu	// 'number'
     int		wo_rnu;
 #define w_p_rnu w_onebuf_opt.wo_rnu	// 'relativenumber'
+    char_u	*wo_ve;
+#define w_p_ve w_onebuf_opt.wo_ve	// 'virtualedit'
+    unsigned	wo_ve_flags;
+#define	w_ve_flags w_onebuf_opt.wo_ve_flags	// flags for 'virtualedit'
 #ifdef FEAT_LINEBREAK
     long	wo_nuw;
 # define w_p_nuw w_onebuf_opt.wo_nuw	// 'numberwidth'
@@ -328,8 +332,8 @@ struct wininfo_S
     wininfo_T	*wi_prev;	// previous entry or NULL for first entry
     win_T	*wi_win;	// pointer to window that did set wi_fpos
     pos_T	wi_fpos;	// last cursor position in the file
-    int		wi_optset;	// TRUE when wi_opt has useful values
     winopt_T	wi_opt;		// local window options
+    int		wi_optset;	// TRUE when wi_opt has useful values
 #ifdef FEAT_FOLDING
     int		wi_fold_manual;	// copy of w_fold_manual
     garray_T	wi_folds;	// clone of w_folds
@@ -769,11 +773,13 @@ typedef struct memline
 // Values for the flags argument of ml_delete_flags().
 #define ML_DEL_MESSAGE	    1	// may give a "No lines in buffer" message
 #define ML_DEL_UNDO	    2	// called from undo, do not update textprops
+#define ML_DEL_NOPROP	    4	// splitting data block, do not update textprops
 
 // Values for the flags argument of ml_append_int().
 #define ML_APPEND_NEW	    1	// starting to edit a new file
 #define ML_APPEND_MARK	    2	// mark the new line
 #define ML_APPEND_UNDO	    4	// called from undo
+#define ML_APPEND_NOPROP    8	// do not continue textprop from previous line
 
 
 /*
@@ -934,13 +940,14 @@ typedef struct {
 
 # define CSF_TRY	0x0100	// is a ":try"
 # define CSF_FINALLY	0x0200	// ":finally" has been passed
-# define CSF_THROWN	0x0400	// exception thrown to this try conditional
-# define CSF_CAUGHT	0x0800  // exception caught by this try conditional
-# define CSF_SILENT	0x1000	// "emsg_silent" reset by ":try"
+# define CSF_CATCH	0x0400	// ":catch" has been seen
+# define CSF_THROWN	0x0800	// exception thrown to this try conditional
+# define CSF_CAUGHT	0x1000  // exception caught by this try conditional
+# define CSF_SILENT	0x2000	// "emsg_silent" reset by ":try"
 // Note that CSF_ELSE is only used when CSF_TRY and CSF_WHILE are unset
 // (an ":if"), and CSF_SILENT is only used when CSF_TRY is set.
 //
-#define CSF_FUNC_DEF	0x2000	// a function was defined in this block
+#define CSF_FUNC_DEF	0x4000	// a function was defined in this block
 
 /*
  * What's pending for being reactivated at the ":endtry" of this try
@@ -1231,8 +1238,8 @@ struct mapblock
     char	m_silent;	// <silent> used, don't echo commands
     char	m_nowait;	// <nowait> used
 #ifdef FEAT_EVAL
-    sctx_T	m_script_ctx;	// SCTX where map was defined
     char	m_expr;		// <expr> used, m_str is an expression
+    sctx_T	m_script_ctx;	// SCTX where map was defined
 #endif
 };
 
@@ -1608,6 +1615,8 @@ typedef struct
     int		uf_dfunc_idx;	// only valid if uf_def_status is UF_COMPILED
     garray_T	uf_args;	// arguments, including optional arguments
     garray_T	uf_def_args;	// default argument expressions
+    int		uf_args_visible; // normally uf_args.ga_len, less when
+				 // compiling default argument expression.
 
     // for :def (for :function uf_ret_type is NULL)
     type_T	**uf_arg_types;	// argument types (count == uf_args.ga_len)
@@ -1628,6 +1637,11 @@ typedef struct
 # endif
 
     garray_T	uf_lines;	// function lines
+
+    int		uf_debug_tick;	// when last checked for a breakpoint in this
+				// function.
+    int		uf_has_breakpoint;  // TRUE when a breakpoint has been set in
+				    // this function.
 # ifdef FEAT_PROFILE
     int		uf_profiling;	// TRUE when func is being profiled
     int		uf_prof_initialized;
@@ -1878,6 +1892,9 @@ typedef struct {
     // used when compiling a :def function, NULL otherwise
     cctx_T	*eval_cctx;
 
+    // used when executing commands from a script, NULL otherwise
+    cstack_T	*eval_cstack;
+
     // Used to collect lines while parsing them, so that they can be
     // concatenated later.  Used when "eval_ga.ga_itemsize" is not zero.
     // "eval_ga.ga_data" is a list of pointers to lines.
@@ -1994,18 +2011,18 @@ struct outer_S {
     garray_T	*out_stack;	    // stack from outer scope
     int		out_frame_idx;	    // index of stack frame in out_stack
     outer_T	*out_up;	    // outer scope of outer scope or NULL
-    int		out_up_is_copy;	    // don't free out_up
+    partial_T	*out_up_partial;    // partial owning out_up or NULL
 };
 
 struct partial_S
 {
     int		pt_refcount;	// reference count
+    int		pt_auto;	// when TRUE the partial was created for using
+				// dict.member in handle_subscript()
     char_u	*pt_name;	// function name; when NULL use
 				// pt_func->uf_name
     ufunc_T	*pt_func;	// function pointer; when NULL lookup function
 				// with pt_name
-    int		pt_auto;	// when TRUE the partial was created for using
-				// dict.member in handle_subscript()
 
     // For a compiled closure: the arguments and local variables scope
     outer_T	pt_outer;
@@ -2013,11 +2030,11 @@ struct partial_S
     funcstack_T	*pt_funcstack;	// copy of stack, used after context
 				// function returns
 
-    int		pt_argc;	// number of arguments
     typval_T	*pt_argv;	// arguments in allocated array
+    int		pt_argc;	// number of arguments
 
-    dict_T	*pt_dict;	// dict for "self"
     int		pt_copyID;	// funcstack may contain pointer to partial
+    dict_T	*pt_dict;	// dict for "self"
 };
 
 typedef struct AutoPatCmd_S AutoPatCmd;
@@ -2086,9 +2103,9 @@ struct jobvar_S
     PROCESS_INFORMATION	jv_proc_info;
     HANDLE		jv_job_object;
 #endif
+    jobstatus_T	jv_status;
     char_u	*jv_tty_in;	// controlling tty input, allocated
     char_u	*jv_tty_out;	// controlling tty output, allocated
-    jobstatus_T	jv_status;
     char_u	*jv_stoponexit;	// allocated
 #ifdef UNIX
     char_u	*jv_termsig;	// allocated
@@ -2512,11 +2529,12 @@ typedef struct {
 # define CRYPT_M_ZIP	0
 # define CRYPT_M_BF	1
 # define CRYPT_M_BF2	2
-# define CRYPT_M_COUNT	3 // number of crypt methods
+# define CRYPT_M_SOD    3
+# define CRYPT_M_COUNT	4 // number of crypt methods
 
 // Currently all crypt methods work inplace.  If one is added that isn't then
 // define this.
-//  # define CRYPT_NOT_INPLACE 1
+# define CRYPT_NOT_INPLACE 1
 #endif
 
 #ifdef FEAT_PROP_POPUP
@@ -3660,6 +3678,7 @@ struct window_S
     int		w_briopt_min;	    // minimum width for breakindent
     int		w_briopt_shift;	    // additional shift for breakindent
     int		w_briopt_sbr;	    // sbr in 'briopt'
+    int		w_briopt_list;      // additional indent for lists
 #endif
 
     // transform a pointer to a "onebuf" option into a "allbuf" option
@@ -3771,7 +3790,7 @@ typedef struct oparg_S
     int		use_reg_one;	// TRUE if delete uses reg 1 even when not
 				// linewise
     int		inclusive;	// TRUE if char motion is inclusive (only
-				// valid when motion_type is MCHAR
+				// valid when motion_type is MCHAR)
     int		end_adjusted;	// backuped b_op_end one char (only used by
 				// do_format())
     pos_T	start;		// start of the operator
@@ -3788,6 +3807,8 @@ typedef struct oparg_S
     colnr_T	end_vcol;	// end col for block mode operator
     long	prev_opcount;	// ca.opcount saved for K_CURSORHOLD
     long	prev_count0;	// ca.count0 saved for K_CURSORHOLD
+    int		excl_tr_ws;	// exclude trailing whitespace for yank of a
+				// block
 } oparg_T;
 
 /*
@@ -3904,8 +3925,8 @@ struct VimMenu
     char_u	*en_dname;	    // "dname" untranslated, NULL when "dname"
 				    // was not translated
 #endif
-    int		mnemonic;	    // mnemonic key (after '&')
     char_u	*actext;	    // accelerator text (after TAB)
+    int		mnemonic;	    // mnemonic key (after '&')
     int		priority;	    // Menu order priority
 #ifdef FEAT_GUI
     void	(*cb)(vimmenu_T *); // Call-back function
@@ -4424,7 +4445,10 @@ typedef enum {
 
 // Struct used to pass to error messages about where the error happened.
 typedef struct {
+    char    *wt_func_name;  // function name or NULL
     char    wt_index;	    // argument or variable index, 0 means unknown
     char    wt_variable;    // "variable" when TRUE, "argument" otherwise
 } where_T;
+
+#define WHERE_INIT {NULL, 0, 0}
 

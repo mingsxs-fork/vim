@@ -161,6 +161,8 @@ let s:filename_checks = {
     \ 'ecd': ['file.ecd'],
     \ 'edif': ['file.edf', 'file.edif', 'file.edo'],
     \ 'elinks': ['elinks.conf'],
+    \ 'elixir': ['file.ex', 'file.exs', 'mix.lock'],
+    \ 'eelixir': ['file.eex', 'file.leex'],
     \ 'elm': ['file.elm'],
     \ 'elmfilt': ['filter-rules'],
     \ 'epuppet': ['file.epp'],
@@ -190,6 +192,7 @@ let s:filename_checks = {
     \ 'gdb': ['.gdbinit'],
     \ 'gdmo': ['file.mo', 'file.gdmo'],
     \ 'gedcom': ['file.ged', 'lltxxxxx.txt', '/tmp/lltmp', '/tmp/lltmp-file', 'any/tmp/lltmp', 'any/tmp/lltmp-file'],
+    \ 'gemtext': ['file.gmi', 'file.gemini'],
     \ 'gift': ['file.gift'],
     \ 'gitcommit': ['COMMIT_EDITMSG', 'MERGE_MSG', 'TAG_EDITMSG'],
     \ 'gitconfig': ['file.git/config', '.gitconfig', '.gitmodules', 'file.git/modules//config', '/.config/git/config', '/etc/gitconfig', '/etc/gitconfig.d/file', '/.gitconfig.d/file', 'any/.config/git/config', 'any/.gitconfig.d/file', 'some.git/config', 'some.git/modules/any/config'],
@@ -257,8 +260,10 @@ let s:filename_checks = {
     \ 'jgraph': ['file.jgr'],
     \ 'jovial': ['file.jov', 'file.j73', 'file.jovial'],
     \ 'jproperties': ['file.properties', 'file.properties_xx', 'file.properties_xx_xx', 'some.properties_xx_xx_file'],
-    \ 'json': ['file.json', 'file.jsonp', 'file.webmanifest', 'Pipfile.lock'],
+    \ 'json': ['file.json', 'file.jsonp', 'file.json-patch', 'file.webmanifest', 'Pipfile.lock', 'file.ipynb'],
+    \ 'jsonc': ['file.jsonc'],
     \ 'jsp': ['file.jsp'],
+    \ 'julia': ['file.jl'],
     \ 'kconfig': ['Kconfig', 'Kconfig.debug', 'Kconfig.file'],
     \ 'kivy': ['file.kv'],
     \ 'kix': ['file.kix'],
@@ -423,11 +428,12 @@ let s:filename_checks = {
     \ 'sass': ['file.sass'],
     \ 'sather': ['file.sa'],
     \ 'sbt': ['file.sbt'],
-    \ 'scala': ['file.scala'],
+    \ 'scala': ['file.scala', 'file.sc'],
     \ 'scheme': ['file.scm', 'file.ss', 'file.rkt'],
     \ 'scilab': ['file.sci', 'file.sce'],
     \ 'screen': ['.screenrc', 'screenrc'],
     \ 'sexplib': ['file.sexp'],
+    \ 'scdoc': ['file.scd'],
     \ 'scss': ['file.scss'],
     \ 'sd': ['file.sd'],
     \ 'sdc': ['file.sdc'],
@@ -774,6 +780,7 @@ func Test_pp_file()
   split Xfile.pp
   call assert_equal('pascal', &filetype)
   bwipe!
+  unlet g:filetype_pp
 
   " Test dist#ft#FTpp()
   call writefile(['{ pascal comment'], 'Xfile.pp')
@@ -790,5 +797,41 @@ func Test_pp_file()
   filetype off
 endfunc
 
+func Test_ex_file()
+  filetype on
+
+  call writefile(['arbitrary content'], 'Xfile.ex')
+  split Xfile.ex
+  call assert_equal('elixir', &filetype)
+  bwipe!
+  let g:filetype_euphoria = 'euphoria4'
+  split Xfile.ex
+  call assert_equal('euphoria4', &filetype)
+  bwipe!
+  unlet g:filetype_euphoria
+
+  call writefile(['-- filetype euphoria comment'], 'Xfile.ex')
+  split Xfile.ex
+  call assert_equal('euphoria3', &filetype)
+  bwipe!
+
+  call writefile(['--filetype euphoria comment'], 'Xfile.ex')
+  split Xfile.ex
+  call assert_equal('euphoria3', &filetype)
+  bwipe!
+
+  call writefile(['ifdef '], 'Xfile.ex')
+  split Xfile.ex
+  call assert_equal('euphoria3', &filetype)
+  bwipe!
+
+  call writefile(['include '], 'Xfile.ex')
+  split Xfile.ex
+  call assert_equal('euphoria3', &filetype)
+  bwipe!
+
+  call delete('Xfile.ex')
+  filetype off
+endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

@@ -15,7 +15,6 @@
 #include "vim.h"
 
 static int	VIsual_mode_orig = NUL;		// saved Visual mode
-static int	restart_VIsual_select = 0;
 
 #ifdef FEAT_EVAL
 static void	set_vcount_ca(cmdarg_T *cap, int *set_prevcount);
@@ -379,7 +378,7 @@ static const struct nv_cmd
 };
 
 // Number of commands in nv_cmds[].
-#define NV_CMDS_SIZE (sizeof(nv_cmds) / sizeof(struct nv_cmd))
+#define NV_CMDS_SIZE ARRAY_LENGTH(nv_cmds)
 
 // Sorted index of commands in nv_cmds[].
 static short nv_cmd_idx[NV_CMDS_SIZE];
@@ -1350,11 +1349,18 @@ call_yank_do_autocmd(int regname)
 
 /*
  * End Visual mode.
- * This function should ALWAYS be called to end Visual mode, except from
- * do_pending_operator().
+ * This function or the next should ALWAYS be called to end Visual mode, except
+ * from do_pending_operator().
  */
     void
-end_visual_mode(void)
+end_visual_mode()
+{
+    end_visual_mode_keep_button();
+    reset_held_button();
+}
+
+    void
+end_visual_mode_keep_button()
 {
 #ifdef FEAT_CLIPBOARD
     /*
@@ -1743,6 +1749,7 @@ clearop(oparg_T *oap)
     oap->regname = 0;
     oap->motion_force = NUL;
     oap->use_reg_one = FALSE;
+    motion_force = NUL;
 }
 
     void
@@ -2973,6 +2980,13 @@ dozet:
 		}
 		break;
 
+		// "zp", "zP" in block mode put without addind trailing spaces
+    case 'P':
+    case 'p':  nv_put(cap);
+	       break;
+		// "zy" Yank without trailing spaces
+    case 'y':  nv_operator(cap);
+	       break;
 #ifdef FEAT_FOLDING
 		// "zF": create fold command
 		// "zf": create fold operator
@@ -5195,7 +5209,7 @@ nv_Replace(cmdarg_T *cap)
     else if (!checkclearopq(cap->oap))
     {
 	if (!curbuf->b_p_ma)
-	    emsg(_(e_modifiable));
+	    emsg(_(e_cannot_make_changes_modifiable_is_off));
 	else
 	{
 	    if (virtual_active())
@@ -5220,7 +5234,7 @@ nv_vreplace(cmdarg_T *cap)
     else if (!checkclearopq(cap->oap))
     {
 	if (!curbuf->b_p_ma)
-	    emsg(_(e_modifiable));
+	    emsg(_(e_cannot_make_changes_modifiable_is_off));
 	else
 	{
 	    if (cap->extra_char == Ctrl_V)	// get another character
@@ -5732,8 +5746,8 @@ may_start_select(int c)
 n_start_visual_mode(int c)
 {
 #ifdef FEAT_CONCEAL
-    // Check for redraw before changing the state.
-    conceal_check_cursor_line();
+    int cursor_line_was_concealed = curwin->w_p_cole > 0
+						&& conceal_cursor_line(curwin);
 #endif
 
     VIsual_mode = c;
@@ -5742,7 +5756,7 @@ n_start_visual_mode(int c)
 
     // Corner case: the 0 position in a tab may change when going into
     // virtualedit.  Recalculate curwin->w_cursor to avoid bad highlighting.
-    if (c == Ctrl_V && (ve_flags & VE_BLOCK) && gchar_cursor() == TAB)
+    if (c == Ctrl_V && (get_ve_flags() & VE_BLOCK) && gchar_cursor() == TAB)
     {
 	validate_virtcol();
 	coladvance(curwin->w_virtcol);
@@ -5755,8 +5769,8 @@ n_start_visual_mode(int c)
 
     setmouse();
 #ifdef FEAT_CONCEAL
-    // Check for redraw after changing the state.
-    conceal_check_cursor_line();
+    // Check if redraw is needed after changing the state.
+    conceal_check_cursor_line(cursor_line_was_concealed);
 #endif
 
     if (p_smd && msg_silent == 0)
@@ -6143,6 +6157,17 @@ nv_g_cmd(cmdarg_T *cap)
 
 		i = curwin->w_leftcol + curwin->w_width - col_off - 1;
 		coladvance((colnr_T)i);
+
+		// if the character doesn't fit move one back
+		if (curwin->w_cursor.col > 0
+				       && (*mb_ptr2cells)(ml_get_cursor()) > 1)
+		{
+		    colnr_T vcol;
+
+		    getvvcol(curwin, &curwin->w_cursor, NULL, NULL, &vcol);
+		    if (vcol >= curwin->w_leftcol + curwin->w_width - col_off)
+			--curwin->w_cursor.col;
+		}
 
 		// Make sure we stick in this column.
 		validate_virtcol();
@@ -6754,7 +6779,7 @@ adjust_cursor(oparg_T *oap)
     // - 'virtualedit' is not "all" and not "onemore".
     if (curwin->w_cursor.col > 0 && gchar_cursor() == NUL
 		&& (!VIsual_active || *p_sel == 'o')
-		&& !virtual_active() && (ve_flags & VE_ONEMORE) == 0)
+		&& !virtual_active() && (get_ve_flags() & VE_ONEMORE) == 0)
     {
 	--curwin->w_cursor.col;
 	// prevent cursor from moving on the trail byte
@@ -6988,7 +7013,7 @@ nv_esc(cmdarg_T *cap)
 set_cursor_for_append_to_line(void)
 {
     curwin->w_set_curswant = TRUE;
-    if (ve_flags == VE_ALL)
+    if (get_ve_flags() == VE_ALL)
     {
 	int save_State = State;
 
@@ -7049,7 +7074,7 @@ nv_edit(cmdarg_T *cap)
     else if (!curbuf->b_p_ma && !p_im)
     {
 	// Only give this error when 'insertmode' is off.
-	emsg(_(e_modifiable));
+	emsg(_(e_cannot_make_changes_modifiable_is_off));
 	clearop(cap->oap);
 	if (cap->cmdchar == K_PS)
 	    // drop the pasted text
@@ -7407,11 +7432,13 @@ nv_put_opt(cmdarg_T *cap, int fix_indent)
 	}
 	else
 	    dir = (cap->cmdchar == 'P'
-				 || (cap->cmdchar == 'g' && cap->nchar == 'P'))
-							 ? BACKWARD : FORWARD;
+		    || ((cap->cmdchar == 'g' || cap->cmdchar == 'z')
+			&& cap->nchar == 'P')) ? BACKWARD : FORWARD;
 	prep_redo_cmd(cap);
 	if (cap->cmdchar == 'g')
 	    flags |= PUT_CURSEND;
+	else if (cap->cmdchar == 'z')
+	    flags |= PUT_BLOCK_INNER;
 
 	if (VIsual_active)
 	{
