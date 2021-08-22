@@ -932,6 +932,14 @@ time_push(void *tv_rel, void *tv_start)
     *(struct timeval *)tv_start = prev_timeval;
 }
 
+struct timeval
+timeval_now(void)
+{
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    return now;
+}
+
 /*
  * Compute the previous time after doing something that could nest.
  * Subtract "*tp" from prev_timeval;

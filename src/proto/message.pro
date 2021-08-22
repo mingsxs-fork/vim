@@ -76,4 +76,6 @@ int do_dialog(int type, char_u *title, char_u *message, char_u *buttons, int dfl
 int vim_dialog_yesno(int type, char_u *title, char_u *message, int dflt);
 int vim_dialog_yesnocancel(int type, char_u *title, char_u *message, int dflt);
 int vim_dialog_yesnoallcancel(int type, char_u *title, char_u *message, int dflt);
+void msg_tag_now(char *file, int line);
+#define MESSAGE_TAG_NOW() msg_tag_now(__FILE__, __LINE__)
 /* vim: set ft=c : */

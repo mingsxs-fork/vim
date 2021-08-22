@@ -123,6 +123,12 @@ msg_attr(char *s, int attr)
     return msg_attr_keep(s, attr, FALSE);
 }
 
+    void
+msg_tag_now(char *file, int line) {
+    struct timeval now = timeval_now();
+    smsg("FILE %s at %d: sec - %lu, usec - %lu", file, line, now.tv_sec, now.tv_usec);
+}
+
     int
 msg_attr_keep(
     char	*s,
