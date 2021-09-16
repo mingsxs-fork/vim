@@ -695,6 +695,8 @@ op_delete(oparg_T *oap)
 	    if (op_yank(oap, TRUE, FALSE) == OK)   // yank without message
 		did_yank = TRUE;
 	}
+	else
+	    reset_y_append(); // not appending to unnamed register
 
 	/*
 	 * Put deleted text into register 1 and shift number registers if the
@@ -942,7 +944,8 @@ op_delete(oparg_T *oap)
 	    curwin->w_cursor = curpos;	// restore curwin->w_cursor
 	    (void)do_join(2, FALSE, FALSE, FALSE, FALSE);
 	}
-	auto_format(FALSE, TRUE);
+	if (oap->op_type == OP_DELETE)
+	    auto_format(FALSE, TRUE);
     }
 
     msgmore(curbuf->b_ml.ml_line_count - old_lcount);
@@ -1809,6 +1812,7 @@ op_change(oparg_T *oap)
 	    vim_free(ins_text);
 	}
     }
+    auto_format(FALSE, TRUE);
 
     return retval;
 }

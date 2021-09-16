@@ -412,7 +412,8 @@ def Test_disassemble_store_index()
         '\d PUSHNR 0\_s*' ..
         '\d LOAD $0\_s*' ..
         '\d MEMBER dd\_s*' ..
-        '\d STOREINDEX any\_s*' ..
+        '\d\+ USEDICT\_s*' ..
+        '\d\+ STOREINDEX any\_s*' ..
         '\d\+ RETURN void',
         res)
 enddef
@@ -1625,11 +1626,13 @@ def Test_disassemble_dict_member()
         'var res = d.item\_s*' ..
         '\d\+ LOAD $0\_s*' ..
         '\d\+ MEMBER item\_s*' ..
+        '\d\+ USEDICT\_s*' ..
         '\d\+ STORE $1\_s*' ..
         'res = d\["item"\]\_s*' ..
         '\d\+ LOAD $0\_s*' ..
         '\d\+ PUSHS "item"\_s*' ..
         '\d\+ MEMBER\_s*' ..
+        '\d\+ USEDICT\_s*' ..
         '\d\+ STORE $1\_s*',
         instr)
   assert_equal(1, DictMember())
@@ -2255,6 +2258,82 @@ def Test_debugged()
         res)
 enddef
 
+def s:DebugElseif()
+  var b = false
+  if b
+    eval 1 + 0
+  silent elseif !b
+    eval 2 + 0
+  endif
+enddef
+
+def Test_debug_elseif()
+  var res = execute('disass debug s:DebugElseif')
+  assert_match('<SNR>\d*_DebugElseif\_s*' ..
+          'var b = false\_s*' ..
+          '0 DEBUG line 1-1 varcount 0\_s*' ..
+          '1 PUSH false\_s*' ..
+          '2 STORE $0\_s*' ..
+
+          'if b\_s*' ..
+          '3 DEBUG line 2-2 varcount 1\_s*' ..
+          '4 LOAD $0\_s*' ..
+          '5 JUMP_IF_FALSE -> 10\_s*' ..
+
+          'eval 1 + 0\_s*' ..
+          '6 DEBUG line 3-3 varcount 1\_s*' ..
+          '7 PUSHNR 1\_s*' ..
+          '8 DROP\_s*' ..
+
+          'silent elseif !b\_s*' ..
+          '9 JUMP -> 20\_s*' ..
+          '10 CMDMOD silent\_s*' ..
+          '11 DEBUG line 4-4 varcount 1\_s*' ..
+          '12 LOAD $0\_s*' ..
+          '13 INVERT -1 (!val)\_s*' ..
+          '14 CMDMOD_REV\_s*' ..
+          '15 JUMP_IF_FALSE -> 20\_s*' ..
+
+          'eval 2 + 0\_s*' ..
+          '16 DEBUG line 5-5 varcount 1\_s*' ..
+          '17 PUSHNR 2\_s*' ..
+          '18 DROP\_s*' ..
+
+          'endif\_s*' ..
+          '19 DEBUG line 6-6 varcount 1\_s*' ..
+          '20 RETURN void*',
+        res)
+enddef
+
+func Legacy() dict
+  echo 'legacy'
+endfunc
+
+def s:UseMember()
+  var d = {func: Legacy}
+  var v = d.func()
+enddef
+
+def Test_disassemble_dict_stack()
+  var res = execute('disass s:UseMember')
+  assert_match('<SNR>\d*_UseMember\_s*' ..
+          'var d = {func: Legacy}\_s*' ..
+          '\d PUSHS "func"\_s*' ..
+          '\d PUSHFUNC "Legacy"\_s*' ..
+          '\d NEWDICT size 1\_s*' ..
+          '\d STORE $0\_s*' ..
+
+          'var v = d.func()\_s*' ..
+          '\d LOAD $0\_s*' ..
+          '\d MEMBER func\_s*' ..
+          '\d PCALL top (argc 0)\_s*' ..
+          '\d PCALL end\_s*' ..
+          '\d CLEARDICT\_s*' ..
+          '\d\+ STORE $1\_s*' ..
+          '\d\+ RETURN void*',
+        res)
+enddef
+
 def s:EchoMessages()
   echohl ErrorMsg | echom v:exception | echohl NONE
 enddef
@@ -2314,6 +2393,7 @@ def Test_disassemble_after_reload()
     delfunc g:ThisFunc
     delfunc g:ThatFunc
 enddef
+
 
 
 " vim: ts=8 sw=2 sts=2 expandtab tw=80 fdm=marker

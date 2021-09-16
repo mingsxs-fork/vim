@@ -1,4 +1,4 @@
-*eval.txt*	For Vim version 8.2.  Last change: 2021 Aug 13
+*eval.txt*	For Vim version 8.2.  Last change: 2021 Sep 08
 
 
 		  VIM REFERENCE MANUAL	  by Bram Moolenaar
@@ -2469,6 +2469,7 @@ atan2({expr1}, {expr2})		Float	arc tangent of {expr1} / {expr2}
 balloon_gettext()		String	current text in the balloon
 balloon_show({expr})		none	show {expr} inside the balloon
 balloon_split({msg})		List	split {msg} as used for a balloon
+blob2list({blob})		List	convert {blob} into a list of numbers
 browse({save}, {title}, {initdir}, {default})
 				String	put up a file requester
 browsedir({title}, {initdir})	String	put up a directory requester
@@ -2721,7 +2722,8 @@ libcallnr({lib}, {func}, {arg})	Number	idem, but return a Number
 line({expr} [, {winid}])	Number	line nr of cursor, last line or mark
 line2byte({lnum})		Number	byte count of line {lnum}
 lispindent({lnum})		Number	Lisp indent for line {lnum}
-list2str({list} [, {utf8}])	String	turn numbers in {list} into a String
+list2blob({list})		Blob	turn {list} of numbers into a Blob
+list2str({list} [, {utf8}])	String	turn {list} of numbers into a String
 listener_add({callback} [, {buf}])
 				Number	add a callback to listen to changes
 listener_flush([{buf}])		none	invoke listener callbacks
@@ -3354,6 +3356,17 @@ balloon_split({msg})					*balloon_split()*
 
 <		{only available when compiled with the |+balloon_eval_term|
 		feature}
+
+blob2list({blob})					*blob2list()*
+		Return a List containing the number value of each byte in Blob
+		{blob}.  Examples: >
+			blob2list(0z0102.0304)	returns [1, 2, 3, 4]
+			blob2list(0z)		returns []
+<		Returns an empty List on error.  |list2blob()| does the
+		opposite.
+
+		Can also be used as a |method|: >
+			GetBlob()->blob2list()
 
 							*browse()*
 browse({save}, {title}, {initdir}, {default})
@@ -4864,14 +4877,17 @@ finddir({name} [, {path} [, {count}]])				*finddir()*
 		Find directory {name} in {path}.  Supports both downwards and
 		upwards recursive directory searches.  See |file-searching|
 		for the syntax of {path}.
+
 		Returns the path of the first found match.  When the found
 		directory is below the current directory a relative path is
 		returned.  Otherwise a full path is returned.
 		If {path} is omitted or empty then 'path' is used.
+
 		If the optional {count} is given, find {count}'s occurrence of
 		{name} in {path} instead of the first one.
 		When {count} is negative return all the matches in a |List|.
-		This is quite similar to the ex-command |:find|.
+
+		This is quite similar to the ex-command `:find`.
 		{only available when compiled with the |+file_in_path|
 		feature}
 
@@ -5094,7 +5110,7 @@ fullcommand({name})						*fullcommand()*
 		The string argument {name} may start with a `:` and can
 		include a [range], these are skipped and not returned.
 		Returns an empty string if a command doesn't exist or if it's
-		ambiguous (for user-defined functions).
+		ambiguous (for user-defined commands).
 
 		For example `fullcommand('s')`, `fullcommand('sub')`,
 		`fullcommand(':%substitute')` all return "substitute".
@@ -7205,6 +7221,19 @@ lispindent({lnum})					*lispindent()*
 		Can also be used as a |method|: >
 			GetLnum()->lispindent()
 
+list2blob({list})					*list2blob()*
+		Return a Blob concatenating all the number values in {list}.
+		Examples: >
+			list2blob([1, 2, 3, 4])	returns 0z01020304
+			list2blob([])		returns 0z
+<		Returns an empty Blob on error.  If one of the numbers is
+		negative or more than 255 error *E1239* is given.
+
+		|blob2list()| does the opposite.
+
+		Can also be used as a |method|: >
+			GetList()->list2blob()
+
 list2str({list} [, {utf8}])				*list2str()*
 		Convert each number in {list} to a character string can
 		concatenate them all.  Examples: >
@@ -8529,6 +8558,21 @@ pyxeval({expr})						*pyxeval()*
 <		{only available when compiled with the |+python| or the
 		|+python3| feature}
 
+rand([{expr}])						*rand()* *random*
+		Return a pseudo-random Number generated with an xoshiro128**
+		algorithm using seed {expr}.  The returned number is 32 bits,
+		also on 64 bits systems, for consistency.
+		{expr} can be initialized by |srand()| and will be updated by
+		rand().  If {expr} is omitted, an internal seed value is used
+		and updated.
+
+		Examples: >
+			:echo rand()
+			:let seed = srand()
+			:echo rand(seed)
+			:echo rand(seed) % 16  " random number 0 - 15
+<
+
 							*E726* *E727*
 range({expr} [, {max} [, {stride}]])				*range()*
 		Returns a |List| with Numbers:
@@ -8550,21 +8594,6 @@ range({expr} [, {max} [, {stride}]])				*range()*
 <
 		Can also be used as a |method|: >
 			GetExpr()->range()
-<
-
-rand([{expr}])						*rand()* *random*
-		Return a pseudo-random Number generated with an xoshiro128**
-		algorithm using seed {expr}.  The returned number is 32 bits,
-		also on 64 bits systems, for consistency.
-		{expr} can be initialized by |srand()| and will be updated by
-		rand().  If {expr} is omitted, an internal seed value is used
-		and updated.
-
-		Examples: >
-			:echo rand()
-			:let seed = srand()
-			:echo rand(seed)
-			:echo rand(seed) % 16  " random number 0 - 15
 <
 
 readblob({fname})					*readblob()*
@@ -10110,6 +10139,10 @@ shellescape({string} [, {special}])			*shellescape()*
 		With a |non-zero-arg| {special} the <NL> character is also
 		escaped.  When 'shell' containing "csh" in the tail it's
 		escaped a second time.
+
+		The "\" character will be escaped when 'shell' contains "fish"
+		in the tail. That is because for fish "\" is used as an escape
+		character inside single quotes.
 
 		Example of use with a |:!| command: >
 		    :exe '!dir ' . shellescape(expand('<cfile>'), 1)

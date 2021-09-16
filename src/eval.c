@@ -561,16 +561,19 @@ eval_to_string_safe(
     char_u	*retval;
     funccal_entry_T funccal_entry;
     int		save_sc_version = current_sctx.sc_version;
+    int		save_garbage = may_garbage_collect;
 
     current_sctx.sc_version = 1;
     save_funccal(&funccal_entry);
     if (use_sandbox)
 	++sandbox;
     ++textwinlock;
+    may_garbage_collect = FALSE;
     retval = eval_to_string(arg, FALSE);
     if (use_sandbox)
 	--sandbox;
     --textwinlock;
+    may_garbage_collect = save_garbage;
     restore_funccal();
     current_sctx.sc_version = save_sc_version;
     return retval;
@@ -887,7 +890,13 @@ get_lval(
 	    if (*p == ':')
 	    {
 		scriptitem_T *si = SCRIPT_ITEM(current_sctx.sc_sid);
-		char_u	 *tp = skipwhite(p + 1);
+		char_u	     *tp = skipwhite(p + 1);
+
+		if (tp == p + 1 && !quiet)
+		{
+		    semsg(_(e_white_space_required_after_str_str), ":", p);
+		    return NULL;
+		}
 
 		// parse the type after the name
 		lp->ll_type = parse_type(&tp, &si->sn_type_list, !quiet);

@@ -438,6 +438,29 @@ def Test_return_invalid()
   CheckScriptFailure(lines, 'E1010:')
 enddef
 
+def Test_return_list_any()
+  var lines =<< trim END
+      vim9script
+      def Func(): list<string>
+        var l: list<any>
+        l->add('string')
+        return l
+      enddef
+      echo Func()
+  END
+  CheckScriptFailure(lines, 'E1012:')
+  lines =<< trim END
+      vim9script
+      def Func(): list<string>
+        var l: list<any>
+        l += ['string']
+        return l
+      enddef
+      echo Func()
+  END
+  CheckScriptFailure(lines, 'E1012:')
+enddef
+
 func Increment()
   let g:counter += 1
 endfunc
@@ -465,6 +488,10 @@ def Test_call_varargs()
   MyVarargs('one')->assert_equal('one')
   MyVarargs('one', 'two')->assert_equal('one,two')
   MyVarargs('one', 'two', 'three')->assert_equal('one,two,three')
+enddef
+
+def Test_call_white_space()
+  CheckDefAndScriptFailure2(["call Test ('text')"], 'E476:', 'E1068:')
 enddef
 
 def MyDefaultArgs(name = 'string'): string
@@ -2530,6 +2557,37 @@ def Test_legacy_errors()
   endfor
 enddef
 
+def Test_call_legacy_with_dict()
+  var lines =<< trim END
+      vim9script
+      func Legacy() dict
+        let g:result = self.value
+      endfunc
+      def TestDirect()
+        var d = {value: 'yes', func: Legacy}
+        d.func()
+      enddef
+      TestDirect()
+      assert_equal('yes', g:result)
+      unlet g:result
+
+      def TestIndirect()
+        var d = {value: 'foo', func: Legacy}
+        var Fi = d.func
+        Fi()
+      enddef
+      TestIndirect()
+      assert_equal('foo', g:result)
+      unlet g:result
+
+      var d = {value: 'bar', func: Legacy}
+      d.func()
+      assert_equal('bar', g:result)
+      unlet g:result
+  END
+  CheckScriptSuccess(lines)
+enddef
+
 def DoFilterThis(a: string): list<string>
   # closure nested inside another closure using argument
   var Filter = (l) => filter(l, (_, v) => stridx(v, a) == 0)
@@ -2696,6 +2754,15 @@ def Test_partial_call()
       assert_equal('ooooo', RepeatFunc(5))
   END
   CheckDefAndScriptSuccess(lines)
+
+  lines =<< trim END
+      vim9script
+      def Foo(Parser: any)
+      enddef
+      var Expr: func(dict<any>): dict<any>
+      const Call = Foo(Expr)
+  END
+  CheckScriptFailure(lines, 'E1235:')
 enddef
 
 def Test_cmd_modifier()

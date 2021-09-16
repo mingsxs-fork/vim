@@ -1256,6 +1256,9 @@ EXTERN int	listcmd_busy INIT(= FALSE); // set when :argdo, :windo or
 					    // :bufdo is executing
 EXTERN int	need_start_insertmode INIT(= FALSE);
 					    // start insert mode soon
+#if defined(FEAT_EVAL) || defined(PROTO)
+EXTERN char_u	last_mode[MODE_MAX_LENGTH] INIT(= "n"); // for ModeChanged event
+#endif
 EXTERN char_u	*last_cmdline INIT(= NULL); // last command line (for ":)
 EXTERN char_u	*repeat_cmdline INIT(= NULL); // command line for "."
 EXTERN char_u	*new_last_cmdline INIT(= NULL);	// new value for last_cmdline
@@ -1902,7 +1905,7 @@ EXTERN int channel_need_redraw INIT(= FALSE);
 #endif
 
 #define FOR_ALL_LIST_ITEMS(l, li) \
-    for ((li) = (l)->lv_first; (li) != NULL; (li) = (li)->li_next)
+    for ((li) = (l) == NULL ? NULL : (l)->lv_first; (li) != NULL; (li) = (li)->li_next)
 
 // While executing a regexp and set to OPTION_MAGIC_ON or OPTION_MAGIC_OFF this
 // overrules p_magic.  Otherwise set to OPTION_MAGIC_NOT_SET.

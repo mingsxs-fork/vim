@@ -289,6 +289,15 @@ arg_string(type_T *type, argcontext_T *context)
 }
 
 /*
+ * Check "type" is a blob
+ */
+    static int
+arg_blob(type_T *type, argcontext_T *context)
+{
+    return check_arg_type(&t_blob, type, context);
+}
+
+/*
  * Check "type" is a bool or number 0 or 1.
  */
     static int
@@ -680,6 +689,7 @@ arg_cursor1(type_T *type, argcontext_T *context)
 /*
  * Lists of functions that check the argument types of a builtin function.
  */
+static argcheck_T arg1_blob[] = {arg_blob};
 static argcheck_T arg1_bool[] = {arg_bool};
 static argcheck_T arg1_buffer[] = {arg_buffer};
 static argcheck_T arg1_buffer_or_dict_any[] = {arg_buffer_or_dict_any};
@@ -1169,6 +1179,8 @@ static funcentry_T global_functions[] =
 	    NULL
 #endif
 			},
+    {"blob2list",	1, 1, FEARG_1,	    arg1_blob,
+			ret_list_number,    f_blob2list},
     {"browse",		4, 4, 0,	    arg4_browse,
 			ret_string,	    f_browse},
     {"browsedir",	2, 2, 0,	    arg2_string,
@@ -1305,9 +1317,9 @@ static funcentry_T global_functions[] =
 			ret_number,	    f_diff_hlID},
     {"digraph_get",	1, 1, FEARG_1,	    arg1_string,
 			ret_string,	    f_digraph_get},
-    {"digraph_getlist",0, 1, FEARG_1,	    arg1_number,
+    {"digraph_getlist",0, 1, FEARG_1,	    arg1_bool,
 			ret_list_string_items, f_digraph_getlist},
-    {"digraph_set",	2, 2, FEARG_1,	    arg2_string_number,
+    {"digraph_set",	2, 2, FEARG_1,	    arg2_string,
 			ret_bool,	f_digraph_set},
     {"digraph_setlist",1, 1, FEARG_1,	    arg1_list_string,
 			ret_bool,	    f_digraph_setlist},
@@ -1354,9 +1366,9 @@ static funcentry_T global_functions[] =
     {"filter",		2, 2, FEARG_1,	    arg2_mapfilter,
 			ret_first_arg,	    f_filter},
     {"finddir",		1, 3, FEARG_1,	    arg3_string_string_number,
-			ret_string,	    f_finddir},
+			ret_any,	    f_finddir},
     {"findfile",	1, 3, FEARG_1,	    arg3_string_string_number,
-			ret_string,	    f_findfile},
+			ret_any,	    f_findfile},
     {"flatten",		1, 2, FEARG_1,	    arg2_list_any_number,
 			ret_list_any,	    f_flatten},
     {"flattennew",	1, 2, FEARG_1,	    arg2_list_any_number,
@@ -1589,6 +1601,8 @@ static funcentry_T global_functions[] =
 			ret_number,	    f_line2byte},
     {"lispindent",	1, 1, FEARG_1,	    arg1_lnum,
 			ret_number,	    f_lispindent},
+    {"list2blob",	1, 1, FEARG_1,	    arg1_list_number,
+			ret_blob,	    f_list2blob},
     {"list2str",	1, 2, FEARG_1,	    arg2_list_number_bool,
 			ret_string,	    f_list2str},
     {"listener_add",	1, 2, FEARG_2,	    arg2_any_buffer,
@@ -2307,9 +2321,10 @@ get_function_name(expand_T *xp, int idx)
     if (intidx < 0)
     {
 	name = get_user_func_name(xp, idx);
-	if (name != NULL && *name != NUL)
+	if (name != NULL)
 	{
-	    if (*name != '<' && STRNCMP("g:", xp->xp_pattern, 2) == 0)
+	    if (*name != NUL && *name != '<'
+				      && STRNCMP("g:", xp->xp_pattern, 2) == 0)
 		return cat_prefix_varname('g', name);
 	    return name;
 	}
@@ -2953,8 +2968,6 @@ f_confirm(typval_T *argvars UNUSED, typval_T *rettv UNUSED)
 	error = TRUE;
     if (argvars[1].v_type != VAR_UNKNOWN)
     {
-	if (in_vim9script() && check_for_string_arg(argvars, 1) == FAIL)
-	    return;
 	buttons = tv_get_string_buf_chk(&argvars[1], buf);
 	if (buttons == NULL)
 	    error = TRUE;
@@ -2963,8 +2976,6 @@ f_confirm(typval_T *argvars UNUSED, typval_T *rettv UNUSED)
 	    def = (int)tv_get_number_chk(&argvars[2], &error);
 	    if (argvars[3].v_type != VAR_UNKNOWN)
 	    {
-		if (in_vim9script() && check_for_string_arg(argvars, 3) == FAIL)
-		    return;
 		typestr = tv_get_string_buf_chk(&argvars[3], buf2);
 		if (typestr == NULL)
 		    error = TRUE;
@@ -3930,6 +3941,11 @@ common_function(typval_T *argvars, typval_T *rettv, int is_funcref)
 	// function('MyFunc', [arg], dict)
 	s = tv_get_string(&argvars[0]);
 	use_string = TRUE;
+    }
+    if (s == NULL)
+    {
+	semsg(_(e_invarg2), "NULL");
+	return;
     }
 
     if ((use_string && vim_strchr(s, AUTOLOAD_CHAR) == NULL) || is_funcref)
@@ -6683,9 +6699,14 @@ libcall_common(typval_T *argvars UNUSED, typval_T *rettv, int type)
 	if (argvars[2].v_type == VAR_STRING)
 	    string_in = argvars[2].vval.v_string;
 	if (type == VAR_NUMBER)
+	{
 	    string_result = NULL;
+	}
 	else
+	{
+	    rettv->vval.v_string = NULL;
 	    string_result = &rettv->vval.v_string;
+	}
 	if (mch_libcall(argvars[0].vval.v_string,
 			     argvars[1].vval.v_string,
 			     string_in,
