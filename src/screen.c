@@ -2139,7 +2139,7 @@ screen_char(unsigned off, int row, int col)
 
     // Skip if under the popup menu.
     // Popup windows with zindex higher than POPUPMENU_ZINDEX go on top.
-    if (pum_under_menu(row, col)
+    if (pum_under_menu(row, col, TRUE)
 #ifdef FEAT_PROP_POPUP
 	    && screen_zindex <= POPUPMENU_ZINDEX
 #endif
@@ -4777,6 +4777,35 @@ screen_screenrow(void)
 #endif
 
 /*
+ * Calls mb_ptr2char_adv(p) and returns the character.
+ * If "p" starts with "\x", "\u" or "\U" the hex or unicode value is used.
+ */
+    static int
+get_encoded_char_adv(char_u **p)
+{
+    char_u *s = *p;
+
+    if (s[0] == '\\' && (s[1] == 'x' || s[1] == 'u' || s[1] == 'U'))
+    {
+	varnumber_T num = 0;
+	int	    bytes;
+	int	    n;
+
+	for (bytes = s[1] == 'x' ? 1 : s[1] == 'u' ? 2 : 4; bytes > 0; --bytes)
+	{
+	    *p += 2;
+	    n = hexhex2nr(*p);
+	    if (n < 0)
+		return 0;
+	    num = num * 256 + n;
+	}
+	*p += 2;
+	return num;
+    }
+    return mb_ptr2char_adv(p);
+}
+
+/*
  * Handle setting 'listchars' or 'fillchars'.
  * Assume monocell characters.
  * Returns error message, NULL if it's OK.
@@ -4884,20 +4913,20 @@ set_chars_option(win_T *wp, char_u **varp)
 		{
 		    c2 = c3 = 0;
 		    s = p + len + 1;
-		    c1 = mb_ptr2char_adv(&s);
-		    if (mb_char2cells(c1) > 1)
+		    c1 = get_encoded_char_adv(&s);
+		    if (char2cells(c1) > 1)
 			return e_invarg;
 		    if (tab[i].cp == &lcs_chars.tab2)
 		    {
 			if (*s == NUL)
 			    return e_invarg;
-			c2 = mb_ptr2char_adv(&s);
-			if (mb_char2cells(c2) > 1)
+			c2 = get_encoded_char_adv(&s);
+			if (char2cells(c2) > 1)
 			    return e_invarg;
 			if (!(*s == ',' || *s == NUL))
 			{
-			    c3 = mb_ptr2char_adv(&s);
-			    if (mb_char2cells(c3) > 1)
+			    c3 = get_encoded_char_adv(&s);
+			    if (char2cells(c3) > 1)
 				return e_invarg;
 			}
 		    }
@@ -4938,8 +4967,8 @@ set_chars_option(win_T *wp, char_u **varp)
 			multispace_len = 0;
 			while (*s != NUL && *s != ',')
 			{
-			    c1 = mb_ptr2char_adv(&s);
-			    if (mb_char2cells(c1) > 1)
+			    c1 = get_encoded_char_adv(&s);
+			    if (char2cells(c1) > 1)
 				return e_invarg;
 			    ++multispace_len;
 			}
@@ -4954,7 +4983,7 @@ set_chars_option(win_T *wp, char_u **varp)
 
 			while (*s != NUL && *s != ',')
 			{
-			    c1 = mb_ptr2char_adv(&s);
+			    c1 = get_encoded_char_adv(&s);
 			    if (p == last_multispace)
 				lcs_chars.multispace[multispace_pos++] = c1;
 			}

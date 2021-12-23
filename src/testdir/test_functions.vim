@@ -174,7 +174,7 @@ func Test_strwidth()
 
   if has('float')
     call assert_equal(3, strwidth(1.2))
-    call CheckDefAndScriptFailure2(['echo strwidth(1.2)'], 'E1013: Argument 1: type mismatch, expected string but got float', 'E1174: String required for argument 1')
+    call CheckDefAndScriptFailure(['echo strwidth(1.2)'], ['E1013: Argument 1: type mismatch, expected string but got float', 'E1174: String required for argument 1'])
   endif
 
   set ambiwidth&
@@ -241,7 +241,7 @@ func Test_str2nr()
   call assert_fails('call str2nr({->2})', 'E729:')
   if has('float')
     call assert_equal(1, str2nr(1.2))
-    call CheckDefAndScriptFailure2(['echo str2nr(1.2)'], 'E1013: Argument 1: type mismatch, expected string but got float', 'E1174: String required for argument 1')
+    call CheckDefAndScriptFailure(['echo str2nr(1.2)'], ['E1013: Argument 1: type mismatch, expected string but got float', 'E1174: String required for argument 1'])
   endif
   call assert_fails('call str2nr(10, [])', 'E745:')
 endfunc
@@ -503,7 +503,7 @@ func Test_simplify()
   call assert_fails('call simplify({})', 'E731:')
   if has('float')
     call assert_equal('1.2', simplify(1.2))
-    call CheckDefAndScriptFailure2(['echo simplify(1.2)'], 'E1013: Argument 1: type mismatch, expected string but got float', 'E1174: String required for argument 1')
+    call CheckDefAndScriptFailure(['echo simplify(1.2)'], ['E1013: Argument 1: type mismatch, expected string but got float', 'E1174: String required for argument 1'])
   endif
 endfunc
 
@@ -785,6 +785,8 @@ func Test_mode()
   exe "normal iabc\<C-X>\<C-L>\<F2>\<Esc>u"
   call assert_equal('i-ic', g:current_modes)
 
+  exe "normal R\<F2>\<Esc>"
+  call assert_equal('R-R', g:current_modes)
   " R_CTRL-P: Multiple matches
   exe "normal RBa\<C-P>\<F2>\<Esc>u"
   call assert_equal('R-Rc', g:current_modes)
@@ -818,6 +820,42 @@ func Test_mode()
   " R_CTRL-X CTRL-L: No match
   exe "normal Rabc\<C-X>\<C-L>\<F2>\<Esc>u"
   call assert_equal('R-Rc', g:current_modes)
+
+  exe "normal gR\<F2>\<Esc>"
+  call assert_equal('R-Rv', g:current_modes)
+  " gR_CTRL-P: Multiple matches
+  exe "normal gRBa\<C-P>\<F2>\<Esc>u"
+  call assert_equal('R-Rvc', g:current_modes)
+  " gR_CTRL-P: Single match
+  exe "normal gRBro\<C-P>\<F2>\<Esc>u"
+  call assert_equal('R-Rvc', g:current_modes)
+  " gR_CTRL-X
+  exe "normal gRBa\<C-X>\<F2>\<Esc>u"
+  call assert_equal('R-Rvx', g:current_modes)
+  " gR_CTRL-X CTRL-P: Multiple matches
+  exe "normal gRBa\<C-X>\<C-P>\<F2>\<Esc>u"
+  call assert_equal('R-Rvc', g:current_modes)
+  " gR_CTRL-X CTRL-P: Single match
+  exe "normal gRBro\<C-X>\<C-P>\<F2>\<Esc>u"
+  call assert_equal('R-Rvc', g:current_modes)
+  " gR_CTRL-X CTRL-P + CTRL-P: Single match
+  exe "normal gRBro\<C-X>\<C-P>\<C-P>\<F2>\<Esc>u"
+  call assert_equal('R-Rvc', g:current_modes)
+  " gR_CTRL-X CTRL-L: Multiple matches
+  exe "normal gR\<C-X>\<C-L>\<F2>\<Esc>u"
+  call assert_equal('R-Rvc', g:current_modes)
+  " gR_CTRL-X CTRL-L: Single match
+  exe "normal gRBlu\<C-X>\<C-L>\<F2>\<Esc>u"
+  call assert_equal('R-Rvc', g:current_modes)
+  " gR_CTRL-P: No match
+  exe "normal gRCom\<C-P>\<F2>\<Esc>u"
+  call assert_equal('R-Rvc', g:current_modes)
+  " gR_CTRL-X CTRL-P: No match
+  exe "normal gRCom\<C-X>\<C-P>\<F2>\<Esc>u"
+  call assert_equal('R-Rvc', g:current_modes)
+  " gR_CTRL-X CTRL-L: No match
+  exe "normal gRabc\<C-X>\<C-L>\<F2>\<Esc>u"
+  call assert_equal('R-Rvc', g:current_modes)
 
   call assert_equal('n', 0->mode())
   call assert_equal('n', 1->mode())
@@ -874,10 +912,34 @@ func Test_mode()
   call assert_equal('c-ce', g:current_modes)
   " How to test Ex mode?
 
+  " Test mode in operatorfunc (it used to be Operator-pending).
+  set operatorfunc=OperatorFunc
+  function OperatorFunc(_)
+    call Save_mode()
+  endfunction
+  execute "normal! g@l\<Esc>"
+  call assert_equal('n-n', g:current_modes)
+  execute "normal! i\<C-o>g@l\<Esc>"
+  call assert_equal('n-niI', g:current_modes)
+  execute "normal! R\<C-o>g@l\<Esc>"
+  call assert_equal('n-niR', g:current_modes)
+  execute "normal! gR\<C-o>g@l\<Esc>"
+  call assert_equal('n-niV', g:current_modes)
+
+  if has('terminal')
+    term
+    call feedkeys("\<C-W>N", 'xt')
+    call assert_equal('n', mode())
+    call assert_equal('nt', mode(1))
+    call feedkeys("aexit\<CR>", 'xt')
+  endif
+
   bwipe!
   iunmap <F2>
   xunmap <F2>
   set complete&
+  set operatorfunc&
+  delfunction OperatorFunc
 endfunc
 
 " Test for append()
@@ -2172,6 +2234,12 @@ func Test_call()
   call call(test_null_partial(), [])
   call assert_fails('call test_null_function()()', 'E1192:')
   call assert_fails('call test_null_partial()()', 'E117:')
+
+  let lines =<< trim END
+      let Time = 'localtime'
+      call Time()
+  END
+  call CheckScriptFailure(lines, 'E1085:')
 endfunc
 
 func Test_char2nr()
@@ -2240,6 +2308,7 @@ endfunc
 
 func Test_state()
   CheckRunVimInTerminal
+  let g:test_is_flaky = 1
 
   let getstate = ":echo 'state: ' .. g:state .. '; mode: ' .. g:mode\<CR>"
 
@@ -2706,6 +2775,11 @@ func Test_builtin_check()
   let g:bar = 123
   call extend(g:, #{bar: { -> "foo" }}, "keep")
   call assert_fails('call extend(g:, #{bar: { -> "foo" }}, "force")', 'E704:')
+endfunc
+
+func Test_funcref_to_string()
+  let Fn = funcref('g:Test_funcref_to_string')
+  call assert_equal("function('g:Test_funcref_to_string')", string(Fn))
 endfunc
 
 

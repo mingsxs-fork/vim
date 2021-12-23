@@ -380,8 +380,10 @@ static const struct nv_cmd
 // Number of commands in nv_cmds[].
 #define NV_CMDS_SIZE ARRAY_LENGTH(nv_cmds)
 
+#ifndef PROTO  // cproto doesn't like this
 // Sorted index of commands in nv_cmds[].
 static short nv_cmd_idx[NV_CMDS_SIZE];
+#endif
 
 // The highest index for which
 // nv_cmds[idx].cmd_char == nv_cmd_idx[nv_cmds[idx].cmd_char]
@@ -527,6 +529,7 @@ normal_cmd(
 # endif
     }
 #endif
+    trigger_modechanged();
 
     // When not finishing an operator and no register name typed, reset the
     // count.
@@ -605,6 +608,11 @@ normal_cmd(
 	old_mapped_len = 0;	// do go to Insert mode
     }
 
+    // If the window was made so small that nothing shows, make it at least one
+    // line and one column when typing a command.
+    if (KeyTyped && !KeyStuffed)
+	win_ensure_size();
+
 #ifdef FEAT_CMDL_INFO
     need_flushbuf = add_to_showcmd(c);
 #endif
@@ -627,10 +635,14 @@ getcount:
 		del_from_showcmd(4);	// delete the digit and ~@%
 #endif
 	    }
-	    else
-		ca.count0 = ca.count0 * 10 + (c - '0');
-	    if (ca.count0 < 0)	    // overflow
+	    else if (ca.count0 > 99999999L)
+	    {
 		ca.count0 = 999999999L;
+	    }
+	    else
+	    {
+		ca.count0 = ca.count0 * 10 + (c - '0');
+	    }
 #ifdef FEAT_EVAL
 	    // Set v:count here, when called from main() and not a stuffed
 	    // command, so that v:count can be used in an expression mapping
@@ -697,11 +709,14 @@ getcount:
 	 * multiplied.
 	 */
 	if (ca.count0)
-	    ca.count0 *= ca.opcount;
+	{
+	    if (ca.opcount >= 999999999L / ca.count0)
+		ca.count0 = 999999999L;
+	    else
+		ca.count0 *= ca.opcount;
+	}
 	else
 	    ca.count0 = ca.opcount;
-	if (ca.count0 < 0)	    // overflow
-	    ca.count0 = 999999999L;
     }
 
     /*
@@ -1221,6 +1236,7 @@ normal_end:
     c = finish_op;
 #endif
     finish_op = FALSE;
+    trigger_modechanged();
 #ifdef CURSOR_SHAPE
     // Redraw the cursor with another shape, if we were in Operator-pending
     // mode or did a replace command.
@@ -1278,6 +1294,7 @@ normal_end:
 	if (restart_VIsual_select == 1)
 	{
 	    VIsual_select = TRUE;
+	    trigger_modechanged();
 	    showmode();
 	    restart_VIsual_select = 0;
 	}
@@ -1386,7 +1403,6 @@ end_visual_mode_keep_button()
 #endif
 
     VIsual_active = FALSE;
-    trigger_modechanged();
     setmouse();
     mouse_dragging = 0;
 
@@ -1403,6 +1419,7 @@ end_visual_mode_keep_button()
     may_clear_cmdline();
 
     adjust_cursor_eol();
+    trigger_modechanged();
 }
 
 /*
@@ -1694,19 +1711,37 @@ prep_redo(
     int	    cmd4,
     int	    cmd5)
 {
+    prep_redo_num2(regname, num, cmd1, cmd2, 0L, cmd3, cmd4, cmd5);
+}
+
+/*
+ * Prepare for redo of any command with extra count after "cmd2".
+ */
+    void
+prep_redo_num2(
+    int	    regname,
+    long    num1,
+    int	    cmd1,
+    int	    cmd2,
+    long    num2,
+    int	    cmd3,
+    int	    cmd4,
+    int	    cmd5)
+{
     ResetRedobuff();
     if (regname != 0)	// yank from specified buffer
     {
 	AppendCharToRedobuff('"');
 	AppendCharToRedobuff(regname);
     }
-    if (num)
-	AppendNumberToRedobuff(num);
-
+    if (num1 != 0)
+	AppendNumberToRedobuff(num1);
     if (cmd1 != NUL)
 	AppendCharToRedobuff(cmd1);
     if (cmd2 != NUL)
 	AppendCharToRedobuff(cmd2);
+    if (num2 != 0)
+	AppendNumberToRedobuff(num2);
     if (cmd3 != NUL)
 	AppendCharToRedobuff(cmd3);
     if (cmd4 != NUL)
@@ -2302,12 +2337,20 @@ nv_gd(
 
     if ((len = find_ident_under_cursor(&ptr, FIND_IDENT)) == 0
 	    || find_decl(ptr, len, nchar == 'd', thisblock, SEARCH_START)
-								      == FAIL)
+								       == FAIL)
+    {
 	clearopbeep(oap);
+    }
+    else
+    {
 #ifdef FEAT_FOLDING
-    else if ((fdo_flags & FDO_SEARCH) && KeyTyped && oap->op_type == OP_NOP)
-	foldOpenCursor();
+	if ((fdo_flags & FDO_SEARCH) && KeyTyped && oap->op_type == OP_NOP)
+	    foldOpenCursor();
 #endif
+	// clear any search statistics
+	if (messaging() && !msg_silent && !shortmess(SHM_SEARCHCOUNT))
+	    clear_cmdline = TRUE;
+    }
 }
 
 /*
@@ -2527,7 +2570,7 @@ nv_screengo(oparg_T *oap, int dir, long dist)
     int		col_off1;	// margin offset for first screen line
     int		col_off2;	// margin offset for wrapped screen line
     int		width1;		// text width for first screen line
-    int		width2;		// test width for wrapped screen line
+    int		width2;		// text width for wrapped screen line
 
     oap->motion_type = MCHAR;
     oap->inclusive = (curwin->w_curswant == MAXCOL);
@@ -2653,6 +2696,7 @@ nv_screengo(oparg_T *oap, int dir, long dist)
     if (curwin->w_cursor.col > 0 && curwin->w_p_wrap)
     {
 	colnr_T virtcol;
+	int	c;
 
 	/*
 	 * Check for landing on a character that got split at the end of the
@@ -2665,6 +2709,12 @@ nv_screengo(oparg_T *oap, int dir, long dist)
 	if (virtcol > (colnr_T)width1 && *get_showbreak_value(curwin) != NUL)
 	    virtcol -= vim_strsize(get_showbreak_value(curwin));
 #endif
+
+	c = (*mb_ptr2char)(ml_get_cursor());
+	if (dir == FORWARD && virtcol < curwin->w_curswant
+		&& (curwin->w_curswant <= (colnr_T)width1)
+		&& !vim_isprintc(c) && c > 255)
+	    oneright();
 
 	if (virtcol > curwin->w_curswant
 		&& (curwin->w_curswant < (colnr_T)width1
@@ -3439,6 +3489,7 @@ nv_ctrlg(cmdarg_T *cap)
     if (VIsual_active)	// toggle Selection/Visual mode
     {
 	VIsual_select = !VIsual_select;
+	trigger_modechanged();
 	showmode();
     }
     else if (!checkclearop(cap->oap))
@@ -3501,6 +3552,7 @@ nv_ctrlo(cmdarg_T *cap)
     if (VIsual_active && VIsual_select)
     {
 	VIsual_select = FALSE;
+	trigger_modechanged();
 	showmode();
 	restart_VIsual_select = 2;	// restart Select mode later
     }
@@ -3741,7 +3793,7 @@ nv_ident(cmdarg_T *cap)
 	ptr = vim_strnsave(ptr, n);
 	if (kp_ex)
 	    // Escape the argument properly for an Ex command
-	    p = vim_strsave_fnameescape(ptr, FALSE);
+	    p = vim_strsave_fnameescape(ptr, VSE_NONE);
 	else
 	    // Escape the argument properly for a shell command
 	    p = vim_strsave_shellescape(ptr, TRUE, TRUE);
@@ -3861,8 +3913,10 @@ get_visual_text(
 	    *pp = ml_get_pos(&VIsual);
 	    *lenp = curwin->w_cursor.col - VIsual.col + 1;
 	}
-	if (has_mbyte)
-	    // Correct the length to include the whole last character.
+	if (**pp == NUL)
+	    *lenp = 0;
+	if (has_mbyte && *lenp > 0)
+	    // Correct the length to include all bytes of the last character.
 	    *lenp += (*mb_ptr2len)(*pp + (*lenp - 1)) - 1;
     }
     reset_VIsual_and_resel();
@@ -5539,12 +5593,11 @@ nv_gomark(cmdarg_T *cap)
     static void
 nv_pcmark(cmdarg_T *cap)
 {
-#ifdef FEAT_JUMPLIST
     pos_T	*pos;
-# ifdef FEAT_FOLDING
+#ifdef FEAT_FOLDING
     linenr_T	lnum = curwin->w_cursor.lnum;
     int		old_KeyTyped = KeyTyped;    // getting file may reset it
-# endif
+#endif
 
     if (!checkclearopq(cap->oap))
     {
@@ -5584,9 +5637,6 @@ nv_pcmark(cmdarg_T *cap)
 	    foldOpenCursor();
 # endif
     }
-#else
-    clearopbeep(cap->oap);
-#endif
 }
 
 /*
@@ -5671,8 +5721,7 @@ nv_visual(cmdarg_T *cap)
 	    {
 		curwin->w_cursor.lnum +=
 				    resel_VIsual_line_count * cap->count0 - 1;
-		if (curwin->w_cursor.lnum > curbuf->b_ml.ml_line_count)
-		    curwin->w_cursor.lnum = curbuf->b_ml.ml_line_count;
+		check_cursor();
 	    }
 	    VIsual_mode = resel_VIsual_mode;
 	    if (VIsual_mode == 'v')
@@ -5759,7 +5808,6 @@ n_start_visual_mode(int c)
     VIsual_mode = c;
     VIsual_active = TRUE;
     VIsual_reselect = TRUE;
-    trigger_modechanged();
 
     // Corner case: the 0 position in a tab may change when going into
     // virtualedit.  Recalculate curwin->w_cursor to avoid bad highlighting.
@@ -5774,6 +5822,7 @@ n_start_visual_mode(int c)
     foldAdjustVisual();
 #endif
 
+    trigger_modechanged();
     setmouse();
 #ifdef FEAT_CONCEAL
     // Check if redraw is needed after changing the state.
@@ -6391,7 +6440,6 @@ nv_g_cmd(cmdarg_T *cap)
 	    do_exmode(TRUE);
 	break;
 
-#ifdef FEAT_JUMPLIST
     case ',':
 	nv_pcmark(cap);
 	break;
@@ -6400,7 +6448,6 @@ nv_g_cmd(cmdarg_T *cap)
 	cap->count1 = -cap->count1;
 	nv_pcmark(cap);
 	break;
-#endif
 
     case 't':
 	if (!checkclearop(oap))
@@ -6458,7 +6505,7 @@ n_opencmd(cmdarg_T *cap)
 		       ) == OK
 		&& open_line(cap->cmdchar == 'O' ? BACKWARD : FORWARD,
 			 has_format_option(FO_OPEN_COMS) ? OPENLINE_DO_COM : 0,
-								      0) == OK)
+								0, NULL) == OK)
 	{
 #ifdef FEAT_CONCEAL
 	    if (curwin->w_p_cole > 0 && oldline != curwin->w_cursor.lnum)

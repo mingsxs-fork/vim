@@ -275,7 +275,8 @@ main
 	 * Hint: to avoid this when typing a command use a forward slash.
 	 * If the cd fails, it doesn't matter.
 	 */
-	(void)vim_chdirfile(params.fname, "drop");
+	if (vim_chdirfile(params.fname, "drop") == OK)
+	    last_chdir_reason = "drop";
 	if (start_dir != NULL)
 	    mch_dirname(start_dir, MAXPATHL);
     }
@@ -667,7 +668,7 @@ vim_main2(void)
 	scroll_region_reset();		// In case Rows changed
     scroll_start();	// may scroll the screen to the right position
 
-#if defined(FEAT_TITLE) && (defined(UNIX) || defined(VMS) || defined(MACOS_X))
+#if defined(UNIX) || defined(VMS) || defined(MACOS_X)
     term_push_title(SAVE_RESTORE_BOTH);
 #endif
 
@@ -1394,10 +1395,8 @@ main_loop(
 	    else if (redraw_cmdline || clear_cmdline)
 		showmode();
 	    redraw_statuslines();
-#ifdef FEAT_TITLE
 	    if (need_maketitle)
 		maketitle();
-#endif
 #ifdef FEAT_VIMINFO
 	    curbuf->b_last_used = vim_time();
 #endif
@@ -1660,7 +1659,7 @@ getout(int exitval)
     {
 	// give the user a chance to read the (error) message
 	no_wait_return = FALSE;
-//	wait_return(FALSE);
+	wait_return(FALSE);
     }
 
     // Position the cursor again, the autocommands may have moved it

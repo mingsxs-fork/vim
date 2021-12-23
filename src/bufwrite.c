@@ -527,7 +527,7 @@ buf_write_bytes(struct bw_info *ip)
 check_mtime(buf_T *buf, stat_T *st)
 {
     if (buf->b_mtime_read != 0
-	    && time_differs((long)st->st_mtime, buf->b_mtime_read))
+		  && time_differs(st, buf->b_mtime_read, buf->b_mtime_read_ns))
     {
 	msg_scroll = TRUE;	    // don't overwrite messages here
 	msg_silent = 0;		    // must give this prompt
@@ -713,7 +713,7 @@ buf_write(
     // Avoid a crash for a long name.
     if (STRLEN(fname) >= MAXPATHL)
     {
-	emsg(_(e_longname));
+	emsg(_(e_name_too_long));
 	return FAIL;
     }
 
@@ -1630,9 +1630,7 @@ buf_write(
     if (forceit && overwriting && vim_strchr(p_cpo, CPO_KEEPRO) == NULL)
     {
 	buf->b_p_ro = FALSE;
-#ifdef FEAT_TITLE
 	need_maketitle = TRUE;	    // set window title later
-#endif
 	status_redraw_all();	    // redraw status lines later
     }
 
@@ -2422,8 +2420,8 @@ restore_backup:
 	    && (overwriting || vim_strchr(p_cpo, CPO_PLUS) != NULL))
     {
 	unchanged(buf, TRUE, FALSE);
-	// b:changedtick is may be incremented in unchanged() but that
-	// should not trigger a TextChanged event.
+	// b:changedtick may be incremented in unchanged() but that should not
+	// trigger a TextChanged event.
 	if (buf->b_last_changedtick + 1 == CHANGEDTICK(buf))
 	    buf->b_last_changedtick = CHANGEDTICK(buf);
 	u_unchanged(buf);
@@ -2558,6 +2556,7 @@ nofail:
 	    {
 		buf_store_time(buf, &st_old, fname);
 		buf->b_mtime_read = buf->b_mtime;
+		buf->b_mtime_read_ns = buf->b_mtime_ns;
 	    }
 	}
     }

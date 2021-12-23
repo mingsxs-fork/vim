@@ -2609,7 +2609,7 @@ utf_printable(int c)
     static struct interval nonprint[] =
     {
 	{0x070f, 0x070f}, {0x180b, 0x180e}, {0x200b, 0x200f}, {0x202a, 0x202e},
-	{0x206a, 0x206f}, {0xd800, 0xdfff}, {0xfeff, 0xfeff}, {0xfff9, 0xfffb},
+	{0x2060, 0x206f}, {0xd800, 0xdfff}, {0xfeff, 0xfeff}, {0xfff9, 0xfffb},
 	{0xfffe, 0xffff}
     };
 
@@ -3847,6 +3847,11 @@ dbcs_screen_head_off(char_u *base, char_u *p)
     return (q == p) ? 0 : 1;
 }
 
+/*
+ * Return offset from "p" to the start of a character, including composing
+ * characters.  "base" must be the start of the string, which must be NUL
+ * terminated.
+ */
     int
 utf_head_off(char_u *base, char_u *p)
 {
@@ -4107,6 +4112,7 @@ mb_off_next(char_u *base, char_u *p)
 /*
  * Return the offset from "p" to the last byte of the character it points
  * into.  Can start anywhere in a stream of bytes.
+ * Composing characters are not included.
  */
     int
 mb_tail_off(char_u *base, char_u *p)
@@ -5510,6 +5516,8 @@ f_setcellwidths(typval_T *argvars, typval_T *rettv UNUSED)
     int		    i;
     listitem_T	    **ptrs;
     cw_interval_T   *table;
+    cw_interval_T   *cw_table_save;
+    size_t	    cw_table_size_save;
 
     if (in_vim9script() && check_for_list_arg(argvars, 0) == FAIL)
 	return;
@@ -5620,9 +5628,41 @@ f_setcellwidths(typval_T *argvars, typval_T *rettv UNUSED)
     }
 
     vim_free(ptrs);
-    vim_free(cw_table);
+
+    cw_table_save = cw_table;
+    cw_table_size_save = cw_table_size;
     cw_table = table;
     cw_table_size = l->lv_len;
+
+    // Check that the new value does not conflict with 'fillchars' or
+    // 'listchars'.
+    if (set_chars_option(curwin, &p_fcs) != NULL)
+    {
+	emsg(_(e_conflicts_with_value_of_fillchars));
+	cw_table = cw_table_save;
+	cw_table_size = cw_table_size_save;
+	vim_free(table);
+	return;
+    }
+    else
+    {
+	tabpage_T	*tp;
+	win_T	*wp;
+
+	FOR_ALL_TAB_WINDOWS(tp, wp)
+	{
+	    if (set_chars_option(wp, &wp->w_p_lcs) != NULL)
+	    {
+		emsg((e_conflicts_with_value_of_listchars));
+		cw_table = cw_table_save;
+		cw_table_size = cw_table_size_save;
+		vim_free(table);
+		return;
+	    }
+	}
+    }
+
+    vim_free(cw_table_save);
 }
 
     void

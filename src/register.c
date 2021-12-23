@@ -991,17 +991,18 @@ shift_delete_registers()
     void
 yank_do_autocmd(oparg_T *oap, yankreg_T *reg)
 {
-    static int	recursive = FALSE;
-    dict_T	*v_event;
-    list_T	*list;
-    int		n;
-    char_u	buf[NUMBUFLEN + 2];
-    long	reglen = 0;
+    static int	    recursive = FALSE;
+    dict_T	    *v_event;
+    list_T	    *list;
+    int		    n;
+    char_u	    buf[NUMBUFLEN + 2];
+    long	    reglen = 0;
+    save_v_event_T  save_v_event;
 
     if (recursive)
 	return;
 
-    v_event = get_vim_var_dict(VV_EVENT);
+    v_event = get_v_event(&save_v_event);
 
     list = list_alloc();
     if (list == NULL)
@@ -1045,8 +1046,7 @@ yank_do_autocmd(oparg_T *oap, yankreg_T *reg)
     recursive = FALSE;
 
     // Empty the dictionary, v:event is still valid
-    dict_free_contents(v_event);
-    hash_init(&v_event->dv_hashtab);
+    restore_v_event(v_event, &save_v_event);
 }
 #endif
 
@@ -1089,26 +1089,8 @@ free_yank(long n)
 	long	    i;
 
 	for (i = n; --i >= 0; )
-	{
-#ifdef AMIGA	    // only for very slow machines
-	    if ((i & 1023) == 1023)  // this may take a while
-	    {
-		// This message should never cause a hit-return message.
-		// Overwrite this message with any next message.
-		++no_wait_return;
-		smsg(_("freeing %ld lines"), i + 1);
-		--no_wait_return;
-		msg_didout = FALSE;
-		msg_col = 0;
-	    }
-#endif
 	    vim_free(y_current->y_array[i]);
-	}
 	VIM_CLEAR(y_current->y_array);
-#ifdef AMIGA
-	if (n >= 1000)
-	    msg("");
-#endif
     }
 }
 
@@ -1550,6 +1532,7 @@ do_put(
     long	j;
     struct block_def bd;
     char_u	**y_array = NULL;
+    yankreg_T	*y_current_used = NULL;
     long	nr_lines = 0;
     pos_T	new_cursor;
     int		indent;
@@ -1660,6 +1643,7 @@ do_put(
 	y_width = y_current->y_width;
 	y_size = y_current->y_size;
 	y_array = y_current->y_array;
+	y_current_used = y_current;
     }
 
     if (y_type == MLINE)
@@ -1884,18 +1868,30 @@ do_put(
 		    spaces = 0;
 	    }
 
-	    // insert the new text
+	    // Insert the new text.
+	    // First check for multiplication overflow.
+	    if (yanklen + spaces != 0
+		     && count > ((INT_MAX - (bd.startspaces + bd.endspaces))
+							/ (yanklen + spaces)))
+	    {
+		emsg(_(e_resulting_text_too_long));
+		break;
+	    }
+
 	    totlen = count * (yanklen + spaces) + bd.startspaces + bd.endspaces;
 	    newp = alloc(totlen + oldlen + 1);
 	    if (newp == NULL)
 		break;
+
 	    // copy part up to cursor to new line
 	    ptr = newp;
 	    mch_memmove(ptr, oldp, (size_t)bd.textcol);
 	    ptr += bd.textcol;
+
 	    // may insert some spaces before the new text
 	    vim_memset(ptr, ' ', (size_t)bd.startspaces);
 	    ptr += bd.startspaces;
+
 	    // insert the new text
 	    for (j = 0; j < count; ++j)
 	    {
@@ -1909,9 +1905,11 @@ do_put(
 		    ptr += spaces;
 		}
 	    }
+
 	    // may insert some spaces after the new text
 	    vim_memset(ptr, ' ', (size_t)bd.endspaces);
 	    ptr += bd.endspaces;
+
 	    // move the text after the cursor to the end of the line.
 	    mch_memmove(ptr, oldp + bd.textcol + delcount,
 				(size_t)(oldlen - bd.textcol - delcount + 1));
@@ -1990,6 +1988,7 @@ do_put(
 	{
 	    linenr_T	end_lnum = 0; // init for gcc
 	    linenr_T	start_lnum = lnum;
+	    int		first_byte_off = 0;
 
 	    if (VIsual_active)
 	    {
@@ -2010,11 +2009,20 @@ do_put(
 		}
 	    }
 
-	    do {
+	    if (count == 0 || yanklen == 0)
+	    {
+		if (VIsual_active)
+		    lnum = end_lnum;
+	    }
+	    else if (count > INT_MAX / yanklen)
+		// multiplication overflow
+		emsg(_(e_resulting_text_too_long));
+	    else
+	    {
 		totlen = count * yanklen;
-		if (totlen > 0)
-		{
+		do {
 		    oldp = ml_get(lnum);
+		    oldlen = (int)STRLEN(oldp);
 		    if (lnum > start_lnum)
 		    {
 			pos_T   pos;
@@ -2025,12 +2033,12 @@ do_put(
 			else
 			    col = MAXCOL;
 		    }
-		    if (VIsual_active && col > (int)STRLEN(oldp))
+		    if (VIsual_active && col > oldlen)
 		    {
 			lnum++;
 			continue;
 		    }
-		    newp = alloc(STRLEN(oldp) + totlen + 1);
+		    newp = alloc(totlen + oldlen + 1);
 		    if (newp == NULL)
 			goto end;	// alloc() gave an error message
 		    mch_memmove(newp, oldp, (size_t)col);
@@ -2042,6 +2050,10 @@ do_put(
 		    }
 		    STRMOVE(ptr, oldp + col);
 		    ml_replace(lnum, newp, FALSE);
+
+		    // compute the byte offset for the last character
+		    first_byte_off = mb_head_off(newp, ptr - 1);
+
 		    // Place cursor on last putted char.
 		    if (lnum == curwin->w_cursor.lnum)
 		    {
@@ -2049,22 +2061,30 @@ do_put(
 			changed_cline_bef_curs();
 			curwin->w_cursor.col += (colnr_T)(totlen - 1);
 		    }
-		}
-		if (VIsual_active)
-		    lnum++;
-	    } while (VIsual_active && lnum <= end_lnum);
+		    if (VIsual_active)
+			lnum++;
+		} while (VIsual_active && lnum <= end_lnum);
 
-	    if (VIsual_active) // reset lnum to the last visual line
-		lnum--;
+		if (VIsual_active) // reset lnum to the last visual line
+		    lnum--;
+	    }
 
+	    // put '] at the first byte of the last character
 	    curbuf->b_op_end = curwin->w_cursor;
+	    curbuf->b_op_end.col -= first_byte_off;
+
 	    // For "CTRL-O p" in Insert mode, put cursor after last char
 	    if (totlen && (restart_edit != 0 || (flags & PUT_CURSEND)))
 		++curwin->w_cursor.col;
+	    else
+		curwin->w_cursor.col -= first_byte_off;
 	    changed_bytes(lnum, col);
 	}
 	else
 	{
+	    linenr_T	new_lnum = new_cursor.lnum;
+	    size_t	len;
+
 	    // Insert at least one line.  When y_type is MCHAR, break the first
 	    // line in two.
 	    for (cnt = 1; cnt <= count; ++cnt)
@@ -2085,6 +2105,7 @@ do_put(
 		    STRCAT(newp, ptr);
 		    // insert second line
 		    ml_append(lnum, newp, (colnr_T)0, FALSE);
+		    ++new_lnum;
 		    vim_free(newp);
 
 		    oldp = ml_get(lnum);
@@ -2103,10 +2124,13 @@ do_put(
 
 		for (; i < y_size; ++i)
 		{
-		    if ((y_type != MCHAR || i < y_size - 1)
-			    && ml_append(lnum, y_array[i], (colnr_T)0, FALSE)
+		    if (y_type != MCHAR || i < y_size - 1)
+		    {
+			if (ml_append(lnum, y_array[i], (colnr_T)0, FALSE)
 								      == FAIL)
 			    goto error;
+			new_lnum++;
+		    }
 		    lnum++;
 		    ++nr_lines;
 		    if (flags & PUT_FIXINDENT)
@@ -2138,6 +2162,8 @@ do_put(
 			    lendiff -= (int)STRLEN(ml_get(lnum));
 		    }
 		}
+		if (cnt == 1)
+		    new_lnum = lnum;
 	    }
 
 error:
@@ -2166,13 +2192,24 @@ error:
 	    else
 		changed_lines(curbuf->b_op_start.lnum, 0,
 					   curbuf->b_op_start.lnum, nr_lines);
+	    if (y_current_used != NULL && (y_current_used != y_current
+					     || y_current->y_array != y_array))
+	    {
+		// Something invoked through changed_lines() has changed the
+		// yank buffer, e.g. a GUI clipboard callback.
+		emsg(_(e_yank_register_changed_while_using_it));
+		goto end;
+	    }
 
-	    // put '] mark at last inserted character
-	    curbuf->b_op_end.lnum = lnum;
-	    // correct length for change in indent
-	    col = (colnr_T)STRLEN(y_array[y_size - 1]) - lendiff;
+	    // Put the '] mark on the first byte of the last inserted character.
+	    // Correct the length for change in indent.
+	    curbuf->b_op_end.lnum = new_lnum;
+	    len = STRLEN(y_array[y_size - 1]);
+	    col = (colnr_T)len - lendiff;
 	    if (col > 1)
-		curbuf->b_op_end.col = col - 1;
+		curbuf->b_op_end.col = col - 1
+				- mb_head_off(y_array[y_size - 1],
+						y_array[y_size - 1] + len - 1);
 	    else
 		curbuf->b_op_end.col = 0;
 
@@ -2195,8 +2232,11 @@ error:
 		}
 		else
 		{
-		    curwin->w_cursor.lnum = lnum;
+		    curwin->w_cursor.lnum = new_lnum;
 		    curwin->w_cursor.col = col;
+		    curbuf->b_op_end = curwin->w_cursor;
+		    if (col > 1)
+			curbuf->b_op_end.col = col - 1;
 		}
 	    }
 	    else if (y_type == MLINE)
@@ -2796,7 +2836,7 @@ write_reg_contents_ex(
 
 	    buf = buflist_findnr(num);
 	    if (buf == NULL)
-		semsg(_(e_nobufnr), (long)num);
+		semsg(_(e_buffer_nr_does_not_exist), (long)num);
 	}
 	else
 	    buf = buflist_findnr(buflist_findpat(str, str + STRLEN(str),

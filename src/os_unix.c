@@ -118,15 +118,12 @@ static void clip_update(void);
 static void xterm_update(void);
 # endif
 
-# if defined(FEAT_XCLIPBOARD) || defined(FEAT_TITLE)
 Window	    x11_window = 0;
-# endif
 Display	    *x11_display = NULL;
 #endif
 
 static int ignore_sigtstp = FALSE;
 
-#ifdef FEAT_TITLE
 static int get_x11_title(int);
 
 static char_u	*oldtitle = NULL;
@@ -134,7 +131,6 @@ static volatile sig_atomic_t oldtitle_outdated = FALSE;
 static int	unix_did_set_title = FALSE;
 static char_u	*oldicon = NULL;
 static int	did_set_icon = FALSE;
-#endif
 
 static void may_core_dump(void);
 
@@ -170,8 +166,7 @@ static RETSIGTYPE catch_sigusr1 SIGPROTOARG;
 #if defined(SIGPWR)
 static RETSIGTYPE catch_sigpwr SIGPROTOARG;
 #endif
-#if defined(SIGALRM) && defined(FEAT_X11) \
-	&& defined(FEAT_TITLE) && !defined(FEAT_GUI_GTK)
+#if defined(SIGALRM) && defined(FEAT_X11) && !defined(FEAT_GUI_GTK)
 # define SET_SIG_ALARM
 static RETSIGTYPE sig_alarm SIGPROTOARG;
 // volatile because it is used in signal handler sig_alarm().
@@ -1152,11 +1147,10 @@ deathtrap SIGDEFARG(sigarg)
     static void
 after_sigcont(void)
 {
-# ifdef FEAT_TITLE
     // Don't change "oldtitle" in a signal handler, set a flag to obtain it
     // again later.
     oldtitle_outdated = TRUE;
-# endif
+
     settmode(TMODE_RAW);
     need_check_timestamps = TRUE;
     did_check_timestamps = FALSE;
@@ -1579,8 +1573,7 @@ mch_input_isatty(void)
 
 #ifdef FEAT_X11
 
-# if defined(ELAPSED_TIMEVAL) \
-	&& (defined(FEAT_XCLIPBOARD) || defined(FEAT_TITLE))
+# if defined(ELAPSED_TIMEVAL)
 
 /*
  * Give a message about the elapsed time for opening the X window.
@@ -1593,7 +1586,7 @@ xopen_message(long elapsed_msec)
 # endif
 #endif
 
-#if defined(FEAT_X11) && (defined(FEAT_TITLE) || defined(FEAT_XCLIPBOARD))
+#if defined(FEAT_X11)
 /*
  * A few functions shared by X11 title and clipboard code.
  */
@@ -1776,7 +1769,6 @@ test_x11_window(Display *dpy)
 }
 #endif
 
-#ifdef FEAT_TITLE
 
 #ifdef FEAT_X11
 
@@ -2316,7 +2308,6 @@ mch_restore_title(int which)
     }
 }
 
-#endif // FEAT_TITLE
 
 /*
  * Return TRUE if "name" looks like some xterm name.
@@ -2349,6 +2340,7 @@ use_xterm_like_mouse(char_u *name)
 	    && (term_is_xterm
 		|| STRNICMP(name, "screen", 6) == 0
 		|| STRNICMP(name, "tmux", 4) == 0
+		|| STRNICMP(name, "gnome", 5) == 0
 		|| STRICMP(name, "st") == 0
 		|| STRNICMP(name, "st-", 3) == 0
 		|| STRNICMP(name, "stterm", 6) == 0));
@@ -2647,7 +2639,15 @@ mch_FullName(
 		{
 		    vim_strncpy(buf, fname, p - fname);
 		    if (mch_chdir((char *)buf))
-			retval = FAIL;
+		    {
+			// Path does not exist (yet).  For a full path fail,
+			// will use the path as-is.  For a relative path use
+			// the current directory and append the file name.
+			if (mch_isFullName(fname))
+			    retval = FAIL;
+			else
+			    p = NULL;
+		    }
 		    else if (*p == '/')
 			fname = p + 1;
 		    else
@@ -2673,7 +2673,6 @@ mch_FullName(
 		    verbose_leave();
 		}
 		l = fchdir(fd);
-		close(fd);
 	    }
 	    else
 #endif
@@ -2681,6 +2680,10 @@ mch_FullName(
 	    if (l != 0)
 		emsg(_(e_prev_dir));
 	}
+#ifdef HAVE_FCHDIR
+	if (fd >= 0)
+	    close(fd);
+#endif
 
 	l = STRLEN(buf);
 	if (l >= len - 1)
@@ -3338,10 +3341,8 @@ mch_free_mem(void)
 # if defined(HAVE_SIGALTSTACK) || defined(HAVE_SIGSTACK)
     VIM_CLEAR(signal_stack);
 # endif
-# ifdef FEAT_TITLE
     vim_free(oldtitle);
     vim_free(oldicon);
-# endif
 }
 #endif
 
@@ -3375,7 +3376,15 @@ exit_scroll(void)
 }
 
 #ifdef USE_GCOV_FLUSH
-extern void __gcov_flush();
+# if (defined(__GNUC__) \
+	    && ((__GNUC__ == 11 && __GNUC_MINOR__ >= 1) || (__GNUC__ >= 12))) \
+	|| (defined(__clang__) && (__clang_major__ >= 12))
+extern void __gcov_dump(void);
+extern void __gcov_reset(void);
+#  define __gcov_flush() do { __gcov_dump(); __gcov_reset(); } while (0)
+# else
+extern void __gcov_flush(void);
+# endif
 #endif
 
     void
@@ -3392,14 +3401,13 @@ mch_exit(int r)
 #endif
     {
 	settmode(TMODE_COOK);
-#ifdef FEAT_TITLE
 	if (!is_not_a_term())
 	{
 	    // restore xterm title and icon name
 	    mch_restore_title(SAVE_RESTORE_BOTH);
 	    term_pop_title(SAVE_RESTORE_BOTH);
 	}
-#endif
+
 	/*
 	 * When t_ti is not empty but it doesn't cause swapping terminal
 	 * pages, need to output a newline when msg_didout is set.  But when
@@ -4589,9 +4597,7 @@ mch_call_shell_system(
 	cur_tmode = TMODE_UNKNOWN;
 	settmode(TMODE_RAW);	// set to raw mode
     }
-# ifdef FEAT_TITLE
     resettitle();
-# endif
 # if defined(FEAT_CLIPBOARD) && defined(FEAT_X11)
     restore_clipboard();
 # endif
@@ -4798,6 +4804,11 @@ mch_call_shell_fork(
 		    // push stream discipline modules
 		    if (options & SHELL_COOKED)
 			setup_slavepty(pty_slave_fd);
+#  ifdef TIOCSCTTY
+		    // Try to become controlling tty (probably doesn't work,
+		    // unless run by root)
+		    ioctl(pty_slave_fd, TIOCSCTTY, (char *)NULL);
+#  endif
 		}
 # endif
 		set_default_child_environment(FALSE);
@@ -5425,9 +5436,7 @@ error:
     if (!did_settmode)
 	if (tmode == TMODE_RAW)
 	    settmode(TMODE_RAW);	// set to raw mode
-# ifdef FEAT_TITLE
     resettitle();
-# endif
     vim_free(argv);
     vim_free(tofree1);
     vim_free(tofree2);
@@ -6675,10 +6684,17 @@ mch_expand_wildcards(
     }
     else
     {
-	if (flags & EW_NOTFOUND)
-	    STRCPY(command, "set nonomatch; ");
-	else
-	    STRCPY(command, "unset nonomatch; ");
+	STRCPY(command, "");
+	if (shell_style == STYLE_GLOB)
+	{
+	    // Assume the nonomatch option is valid only for csh like shells,
+	    // otherwise, this may set the positional parameters for the shell,
+	    // e.g. "$*".
+	    if (flags & EW_NOTFOUND)
+		STRCAT(command, "set nonomatch; ");
+	    else
+		STRCAT(command, "unset nonomatch; ");
+	}
 	if (shell_style == STYLE_GLOB)
 	    STRCAT(command, "glob >");
 	else if (shell_style == STYLE_PRINT)
@@ -6790,7 +6806,7 @@ mch_expand_wildcards(
 	    if (!(flags & EW_SILENT))
 #endif
 	    {
-		msg(_(e_wildexpand));
+		msg(_(e_cannot_expand_wildcards));
 		msg_start();		// don't overwrite this message
 	    }
 	}
@@ -6810,7 +6826,7 @@ mch_expand_wildcards(
 	// Something went wrong, perhaps a file name with a special char.
 	if (!(flags & EW_SILENT))
 	{
-	    msg(_(e_wildexpand));
+	    msg(_(e_cannot_expand_wildcards));
 	    msg_start();		// don't overwrite this message
 	}
 	vim_free(tempname);

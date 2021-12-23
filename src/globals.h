@@ -252,9 +252,7 @@ EXTERN int	no_wait_return INIT(= 0);   // don't wait for return for now
 EXTERN int	need_wait_return INIT(= 0); // need to wait for return later
 EXTERN int	did_wait_return INIT(= FALSE);	// wait_return() was used and
 						// nothing written since then
-#ifdef FEAT_TITLE
 EXTERN int	need_maketitle INIT(= TRUE); // call maketitle() soon
-#endif
 
 EXTERN int	quit_more INIT(= FALSE);    // 'q' hit at "--more--" msg
 #if defined(UNIX) || defined(VMS) || defined(MACOS_X)
@@ -288,6 +286,7 @@ EXTERN int	msg_no_more INIT(= FALSE);  // don't use more prompt, truncate
  * Current context is at ga_len - 1.
  */
 EXTERN garray_T	exestack INIT5(0, 0, sizeof(estack_T), 50, NULL);
+#define HAVE_SOURCING_INFO  (exestack.ga_data != NULL && exestack.ga_len > 0)
 // name of error message source
 #define SOURCING_NAME (((estack_T *)exestack.ga_data)[exestack.ga_len - 1].es_name)
 // line number in the message source or zero
@@ -405,9 +404,16 @@ EXTERN int	garbage_collect_at_exit INIT(= FALSE);
 
 
 // Commonly used types.
+// "unknown" is used for when the type is really unknown, e.g. global
+// variables.  Also for when a function may or may not return something.
 EXTERN type_T t_unknown INIT6(VAR_UNKNOWN, 0, 0, TTFLAG_STATIC, NULL, NULL);
+
+// "any" is used for when the type is mixed.  Excludes "void".
 EXTERN type_T t_any INIT6(VAR_ANY, 0, 0, TTFLAG_STATIC, NULL, NULL);
+
+// "void" is used for a function not returning anything.
 EXTERN type_T t_void INIT6(VAR_VOID, 0, 0, TTFLAG_STATIC, NULL, NULL);
+
 EXTERN type_T t_bool INIT6(VAR_BOOL, 0, 0, TTFLAG_STATIC, NULL, NULL);
 EXTERN type_T t_special INIT6(VAR_SPECIAL, 0, 0, TTFLAG_STATIC, NULL, NULL);
 EXTERN type_T t_number INIT6(VAR_NUMBER, 0, 0, TTFLAG_STATIC, NULL, NULL);
@@ -832,6 +838,7 @@ EXTERN int	stdout_isatty INIT(= TRUE);	// is stdout a terminal?
 #if defined(FEAT_AUTOCHDIR)
 EXTERN int	test_autochdir INIT(= FALSE);
 #endif
+EXTERN char	*last_chdir_reason INIT(= NULL);
 #if defined(EXITFREE)
 EXTERN int	entered_free_all_mem INIT(= FALSE);
 				// TRUE when in or after free_all_mem()
@@ -1035,17 +1042,26 @@ EXTERN vimconv_T output_conv;			// type of output conversion
  */
 // length of char in bytes, including following composing chars
 EXTERN int (*mb_ptr2len)(char_u *p) INIT(= latin_ptr2len);
+
 // idem, with limit on string length
 EXTERN int (*mb_ptr2len_len)(char_u *p, int size) INIT(= latin_ptr2len_len);
+
 // byte length of char
 EXTERN int (*mb_char2len)(int c) INIT(= latin_char2len);
-// convert char to bytes, return the length
+
+// Convert char "c" to bytes in "buf", return the length.  "buf" must have room
+// for at least 6 bytes.
 EXTERN int (*mb_char2bytes)(int c, char_u *buf) INIT(= latin_char2bytes);
+
 EXTERN int (*mb_ptr2cells)(char_u *p) INIT(= latin_ptr2cells);
 EXTERN int (*mb_ptr2cells_len)(char_u *p, int size) INIT(= latin_ptr2cells_len);
 EXTERN int (*mb_char2cells)(int c) INIT(= latin_char2cells);
 EXTERN int (*mb_off2cells)(unsigned off, unsigned max_off) INIT(= latin_off2cells);
 EXTERN int (*mb_ptr2char)(char_u *p) INIT(= latin_ptr2char);
+
+// Byte offset from "p" to the start of a character, including any composing
+// characters. "base" must be the start of the string, which must be NUL
+// terminated.
 EXTERN int (*mb_head_off)(char_u *base, char_u *p) INIT(= latin_head_off);
 
 # if defined(USE_ICONV) && defined(DYNAMIC_ICONV)
@@ -1333,7 +1349,7 @@ extern char *Version;
 #if defined(HAVE_DATE_TIME) && defined(VMS) && defined(VAXC)
 extern char longVersion[];
 #else
-EXTERN char *longVersion INIT(= NULL);
+extern char *longVersion;
 #endif
 
 /*
@@ -1400,7 +1416,7 @@ EXTERN struct subs_expr_S	*substitute_instr INIT(= NULL);
 // table to store parsed 'wildmode'
 EXTERN char_u	wim_flags[4];
 
-#if defined(FEAT_TITLE) && defined(FEAT_STL_OPT)
+#if defined(FEAT_STL_OPT)
 // whether titlestring and iconstring contains statusline syntax
 # define STL_IN_ICON	1
 # define STL_IN_TITLE	2
@@ -1671,7 +1687,6 @@ EXTERN char e_loclist[]		INIT(= N_("E776: No location list"));
 EXTERN char e_letwrong[]	INIT(= N_("E734: Wrong variable type for %s="));
 EXTERN char e_illvar[]		INIT(= N_("E461: Illegal variable name: %s"));
 EXTERN char e_cannot_mod[]	INIT(= N_("E995: Cannot modify existing variable"));
-EXTERN char e_readonlysbx[]	INIT(= N_("E794: Cannot set variable in the sandbox: \"%s\""));
 EXTERN char e_stringreq[]	INIT(= N_("E928: String required"));
 EXTERN char e_numberreq[]	INIT(= N_("E889: Number required"));
 EXTERN char e_boolreq[]		INIT(= N_("E839: Bool required"));
@@ -1680,8 +1695,6 @@ EXTERN char e_dictreq[]		INIT(= N_("E715: Dictionary required"));
 EXTERN char e_listidx[]		INIT(= N_("E684: list index out of range: %ld"));
 EXTERN char e_blobidx[]		INIT(= N_("E979: Blob index out of range: %ld"));
 EXTERN char e_invalblob[]	INIT(= N_("E978: Invalid operation for Blob"));
-EXTERN char e_toomanyarg[]	INIT(= N_("E118: Too many arguments for function: %s"));
-EXTERN char e_toofewarg[]	INIT(= N_("E119: Not enough arguments for function: %s"));
 EXTERN char e_func_deleted[]	INIT(= N_("E933: Function was deleted: %s"));
 EXTERN char e_dictkey[]		INIT(= N_("E716: Key not present in Dictionary: \"%s\""));
 EXTERN char e_listreq[]		INIT(= N_("E714: List required"));
@@ -1691,7 +1704,6 @@ EXTERN char e_listdictarg[]	INIT(= N_("E712: Argument of %s must be a List or Di
 EXTERN char e_listdictblobarg[]	INIT(= N_("E896: Argument of %s must be a List, Dictionary or Blob"));
 EXTERN char e_modulus[]		INIT(= N_("E804: Cannot use '%' with Float"));
 EXTERN char e_const_option[]	INIT(= N_("E996: Cannot lock an option"));
-EXTERN char e_unknown_option[]	INIT(= N_("E113: Unknown option: %s"));
 EXTERN char e_reduceempty[]	INIT(= N_("E998: Reduce of an empty %s with no initial value"));
 EXTERN char e_no_dict_key[]	INIT(= N_("E857: Dictionary key \"%s\" required"));
 #endif
@@ -1702,28 +1714,15 @@ EXTERN char e_textwinlock[]	INIT(= N_("E565: Not allowed to change text or chang
 	|| defined(UNIX) || defined(VMS)
 EXTERN char e_screenmode[]	INIT(= N_("E359: Screen mode setting not supported"));
 #endif
-EXTERN char e_shellempty[]	INIT(= N_("E91: 'shell' option is empty"));
 #if defined(FEAT_SIGN_ICONS) && !defined(FEAT_GUI_GTK)
 EXTERN char e_signdata[]	INIT(= N_("E255: Couldn't read in sign data!"));
 #endif
-EXTERN char e_swapclose[]	INIT(= N_("E72: Close error on swap file"));
-EXTERN char e_tagstack[]	INIT(= N_("E73: tag stack empty"));
-EXTERN char e_toocompl[]	INIT(= N_("E74: Command too complex"));
-EXTERN char e_longname[]	INIT(= N_("E75: Name too long"));
-EXTERN char e_toomsbra[]	INIT(= N_("E76: Too many ["));
-EXTERN char e_toomany[]	INIT(= N_("E77: Too many file names"));
 EXTERN char e_trailing[]	INIT(= N_("E488: Trailing characters"));
 EXTERN char e_trailing_arg[]	INIT(= N_("E488: Trailing characters: %s"));
-EXTERN char e_umark[]		INIT(= N_("E78: Unknown mark"));
-EXTERN char e_wildexpand[]	INIT(= N_("E79: Cannot expand wildcards"));
 EXTERN char e_winheight[]	INIT(= N_("E591: 'winheight' cannot be smaller than 'winminheight'"));
 EXTERN char e_winwidth[]	INIT(= N_("E592: 'winwidth' cannot be smaller than 'winminwidth'"));
-EXTERN char e_write[]		INIT(= N_("E80: Error while writing"));
 EXTERN char e_zerocount[]	INIT(= N_("E939: Positive count required"));
 #ifdef FEAT_EVAL
-EXTERN char e_usingsid[]	INIT(= N_("E81: Using <SID> not in a script context"));
-EXTERN char e_missing_paren[]	INIT(= N_("E107: Missing parentheses: %s"));
-EXTERN char e_missing_close[]	INIT(= N_("E110: Missing ')'"));
 EXTERN char e_missing_dict_colon[] INIT(= N_("E720: Missing colon in Dictionary: %s"));
 EXTERN char e_duplicate_key[]	INIT(= N_("E721: Duplicate key in Dictionary: \"%s\""));
 EXTERN char e_missing_dict_comma[] INIT(= N_("E722: Missing comma in Dictionary: %s"));
@@ -1738,7 +1737,6 @@ EXTERN char e_nbreadonly[]	INIT(= N_("E744: NetBeans does not allow changes in r
 #endif
 EXTERN char e_maxmempat[]	INIT(= N_("E363: pattern uses more memory than 'maxmempattern'"));
 EXTERN char e_emptybuf[]	INIT(= N_("E749: empty buffer"));
-EXTERN char e_nobufnr[]	INIT(= N_("E86: Buffer %ld does not exist"));
 
 EXTERN char e_invalpat[]	INIT(= N_("E682: Invalid search pattern or delimiter"));
 EXTERN char e_bufloaded[]	INIT(= N_("E139: File is loaded in another buffer"));
@@ -1760,10 +1758,7 @@ EXTERN char e_menuothermode[]	INIT(= N_("E328: Menu only exists in another mode"
 EXTERN char e_invalwindow[]	INIT(= N_("E957: Invalid window number"));
 EXTERN char e_listarg[]		INIT(= N_("E686: Argument of %s must be a List"));
 #ifdef FEAT_EVAL
-EXTERN char e_missing_colon[]	INIT(= N_("E109: Missing ':' after '?'"));
 EXTERN char e_missing_in[]	INIT(= N_("E690: Missing \"in\" after :for"));
-EXTERN char e_unknownfunc[]	INIT(= N_("E117: Unknown function: %s"));
-EXTERN char e_missbrac[]	INIT(= N_("E111: Missing ']'"));
 EXTERN char e_else_without_if[] INIT(= N_("E581: :else without :if"));
 EXTERN char e_elseif_without_if[] INIT(= N_("E582: :elseif without :if"));
 EXTERN char e_endif_without_if[] INIT(= N_("E580: :endif without :if"));
@@ -1774,9 +1769,6 @@ EXTERN char e_nowhitespace[]	INIT(= N_("E274: No white space allowed before pare
 EXTERN char e_lock_unlock[]	INIT(= N_("E940: Cannot lock or unlock variable %s"));
 #endif
 
-#if defined(FEAT_GUI) || defined(FEAT_TERMGUICOLORS)
-EXTERN char e_alloc_color[]	INIT(= N_("E254: Cannot allocate color %s"));
-#endif
 EXTERN char e_chan_or_job_req[]	INIT(= N_("E706: Channel or Job required"));
 EXTERN char e_jobreq[]		INIT(= N_("E693: Job required"));
 
@@ -1867,8 +1859,8 @@ EXTERN listitem_T range_list_item;
 // Passed to an eval() function to enable evaluation.
 EXTERN evalarg_T EVALARG_EVALUATE
 # ifdef DO_INIT
-	= {EVAL_EVALUATE, 0, NULL, NULL, NULL, NULL, {0, 0, 0, 0, NULL},
-					  {0, 0, 0, 0, NULL}, NULL, NULL, NULL}
+	= {EVAL_EVALUATE, 0, NULL, NULL, NULL, NULL, GA_EMPTY, GA_EMPTY, NULL,
+			 {0, 0, (int)sizeof(char_u *), 20, NULL}, 0, NULL}
 # endif
 	;
 #endif

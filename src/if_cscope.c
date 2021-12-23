@@ -462,17 +462,8 @@ cs_add(exarg_T *eap UNUSED)
     static void
 cs_stat_emsg(char *fname)
 {
-    char *stat_emsg = _("E563: stat(%s) error: %d");
-    char *buf = alloc(strlen(stat_emsg) + MAXPATHL + 10);
-
-    if (buf != NULL)
-    {
-	(void)sprintf(buf, stat_emsg, fname, errno);
-	(void)emsg(buf);
-	vim_free(buf);
-    }
-    else
-	(void)emsg(_("E563: stat error"));
+    int err = errno;
+    (void)semsg(_("E563: stat(%s) error: %d"), fname, err);
 }
 
 
@@ -1114,16 +1105,7 @@ cs_find_common(
 	// next symbol must be + or -
 	if (strchr(CSQF_FLAGS, *qfpos) == NULL)
 	{
-	    char *nf = _("E469: invalid cscopequickfix flag %c for %c");
-	    char *buf = alloc(strlen(nf));
-
-	    // strlen will be enough because we use chars
-	    if (buf != NULL)
-	    {
-		sprintf(buf, nf, *qfpos, *(qfpos-1));
-		(void)emsg(buf);
-		vim_free(buf);
-	    }
+	    (void)semsg(_("E469: invalid cscopequickfix flag %c for %c"), *qfpos, *(qfpos - 1));
 	    return FALSE;
 	}
 
@@ -1177,24 +1159,8 @@ cs_find_common(
 
     if (totmatches == 0)
     {
-	char *nf = _("E259: no matches found for cscope query %s of %s");
-	char *buf;
-
-	if (!verbose)
-	{
-	    vim_free(nummatches);
-	    return FALSE;
-	}
-
-	buf = alloc(strlen(opt) + strlen(pat) + strlen(nf));
-	if (buf == NULL)
-	    (void)emsg(nf);
-	else
-	{
-	    sprintf(buf, nf, opt, pat);
-	    (void)emsg(buf);
-	    vim_free(buf);
-	}
+	if (verbose)
+	    (void)semsg(_("E259: no matches found for cscope query %s of %s"), opt, pat);
 	vim_free(nummatches);
 	return FALSE;
     }
@@ -1254,7 +1220,7 @@ cs_find_common(
 	int matched = 0;
 
 	// read output
-	cs_fill_results((char *)pat, totmatches, nummatches, &matches,
+	cs_fill_results(pat, totmatches, nummatches, &matches,
 							 &contexts, &matched);
 	vim_free(nummatches);
 	if (matches == NULL)
@@ -1746,7 +1712,7 @@ cs_parse_results(
      *
      *	<filename> <context> <line number> <pattern>
      */
-    if ((name = strtok((char *)buf, (const char *)" ")) == NULL)
+    if ((name = strtok(buf, (const char *)" ")) == NULL)
 	return NULL;
     if ((*context = strtok(NULL, (const char *)" ")) == NULL)
 	return NULL;

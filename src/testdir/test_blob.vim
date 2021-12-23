@@ -663,10 +663,11 @@ func Test_list2blob()
         \ [[0], 0z00],
         \ [[], 0z],
         \ [[0, 0, 0, 0], 0z00000000],
+        \ [[255, 255], 0zFFFF],
         \ [[170, 187, 204, 221], 0zAABB.CCDD],
         \ ]
   for t in tests
-    call assert_equal(t[0]->list2blob(), t[1])
+    call assert_equal(t[1], t[0]->list2blob())
   endfor
   call assert_fails('let b = list2blob([1, []])', 'E745:')
   call assert_fails('let b = list2blob([-1])', 'E1239:')
@@ -674,7 +675,17 @@ func Test_list2blob()
   let b = range(16)->repeat(64)->list2blob()
   call assert_equal(1024, b->len())
   call assert_equal([4, 8, 15], [b[100], b[1000], b[1023]])
+
   call assert_equal(0z, list2blob(test_null_list()))
+  call assert_equal(0z00010203, list2blob(range(4)))
+endfunc
+
+" The following used to cause an out-of-bounds memory access
+func Test_blob2string()
+  let v = '0z' .. repeat('01010101.', 444)
+  let v ..= '01'
+  exe 'let b = ' .. v
+  call assert_equal(v, string(b))
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

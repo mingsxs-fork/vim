@@ -887,22 +887,35 @@ report_discard_pending(int pending, void *value)
     }
 }
 
+/*
+ * Return TRUE if "arg" is only a variable, register, environment variable or
+ * option name.
+ */
     int
 cmd_is_name_only(char_u *arg)
 {
     char_u  *p = arg;
-    char_u  *alias;
+    char_u  *alias = NULL;
     int	    name_only = FALSE;
 
-    if (*p == '&')
+    if (*p == '@')
     {
 	++p;
-	if (STRNCMP("l:", p, 2) == 0 || STRNCMP("g:", p, 2) == 0)
-	    p += 2;
+	if (*p != NUL)
+	    ++p;
     }
-    else if (*p == '@')
-	++p;
-    get_name_len(&p, &alias, FALSE, FALSE);
+    else
+    {
+	if (*p == '&')
+	{
+	    ++p;
+	    if (STRNCMP("l:", p, 2) == 0 || STRNCMP("g:", p, 2) == 0)
+		p += 2;
+	}
+	else if (*p == '$')
+	    ++p;
+	get_name_len(&p, &alias, FALSE, FALSE);
+    }
     name_only = ends_excmd2(arg, skipwhite(p));
     vim_free(alias);
     return name_only;
@@ -1191,8 +1204,10 @@ ex_while(exarg_T *eap)
 								& CSF_FUNC_DEF;
 
 		// Any variables defined in the previous round are no longer
-		// visible.
-		for (i = cstack->cs_script_var_len[cstack->cs_idx];
+		// visible.  Keep the first one for ":for", it is the loop
+		// variable that we reuse every time around.
+		for (i = cstack->cs_script_var_len[cstack->cs_idx]
+					  + (eap->cmdidx == CMD_while ? 0 : 1);
 					       i < si->sn_var_vals.ga_len; ++i)
 		{
 		    svar_T	*sv = ((svar_T *)si->sn_var_vals.ga_data) + i;
@@ -1385,7 +1400,7 @@ ex_endwhile(exarg_T *eap)
 	eap->errmsg = _(err);
     else
     {
-	fl =  cstack->cs_flags[cstack->cs_idx];
+	fl = cstack->cs_flags[cstack->cs_idx];
 	if (!(fl & csf))
 	{
 	    // If we are in a ":while" or ":for" but used the wrong endloop
@@ -2007,6 +2022,7 @@ ex_endtry(exarg_T *eap)
 	if (!(cstack->cs_flags[cstack->cs_idx] & CSF_TRY))
 	{
 	    eap->errmsg = get_end_emsg(cstack);
+
 	    // Find the matching ":try" and report what's missing.
 	    idx = cstack->cs_idx;
 	    do
@@ -2025,6 +2041,9 @@ ex_endtry(exarg_T *eap)
 	     */
 	    if (did_throw)
 		discard_current_exception();
+
+	    // report eap->errmsg, also when there already was an error
+	    did_emsg = FALSE;
 	}
 	else
 	{
@@ -2105,7 +2124,9 @@ ex_endtry(exarg_T *eap)
 	 */
 	(void)cleanup_conditionals(cstack, CSF_TRY | CSF_SILENT, TRUE);
 
-	leave_block(cstack);
+	if (cstack->cs_idx >= 0
+			       && (cstack->cs_flags[cstack->cs_idx] & CSF_TRY))
+	    leave_block(cstack);
 	--cstack->cs_trylevel;
 
 	if (!skip)
@@ -2374,7 +2395,8 @@ cleanup_conditionals(
 		    default:
 			if (cstack->cs_flags[idx] & CSF_FINALLY)
 			{
-			    if (cstack->cs_pending[idx] & CSTP_THROW)
+			    if ((cstack->cs_pending[idx] & CSTP_THROW)
+				    && cstack->cs_exception[idx] != NULL)
 			    {
 				// Cancel the pending exception.  This is in the
 				// finally clause, so that the stack of the
@@ -2400,8 +2422,12 @@ cleanup_conditionals(
 	    if (!(cstack->cs_flags[idx] & CSF_FINALLY))
 	    {
 		if ((cstack->cs_flags[idx] & CSF_ACTIVE)
-			&& (cstack->cs_flags[idx] & CSF_CAUGHT))
+			&& (cstack->cs_flags[idx] & CSF_CAUGHT)
+			&& !(cstack->cs_flags[idx] & CSF_FINISHED))
+		{
 		    finish_exception((except_T *)cstack->cs_exception[idx]);
+		    cstack->cs_flags[idx] |= CSF_FINISHED;
+		}
 		// Stop at this try conditional - except the try block never
 		// got active (because of an inactive surrounding conditional
 		// or when the ":try" appeared after an error or interrupt or

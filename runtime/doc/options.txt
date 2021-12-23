@@ -1,4 +1,4 @@
-*options.txt*	For Vim version 8.2.  Last change: 2021 Sep 06
+*options.txt*	For Vim version 8.2.  Last change: 2021 Dec 11
 
 
 		  VIM REFERENCE MANUAL	  by Bram Moolenaar
@@ -34,6 +34,8 @@ achieve special effects.  These options come in three forms:
 			key codes are not shown, because they are generated
 			internally and can't be changed.  Changing the terminal
 			codes in the GUI is not useful either...
+
+:se[t]! termcap		Idem, but don't use multiple columns.
 
 								*E518* *E519*
 :se[t] {option}?	Show value of {option}.
@@ -369,6 +371,30 @@ used.  Thus it does the same as: >
 	:setlocal path=
 Note: In the future more global options can be made global-local.  Using
 ":setlocal" on a global option might work differently then.
+
+
+						*option-value-function*
+Some options ('completefunc', 'imactivatefunc', 'imstatusfunc', 'omnifunc',
+'operatorfunc', 'quickfixtextfunc', 'tagfunc' and 'thesaurusfunc') are set to
+a function name or a function reference or a lambda function.  When using a
+lambda it will be converted to the name, e.g. "<lambda>123".  Examples:
+>
+	set opfunc=MyOpFunc
+	set opfunc=function('MyOpFunc')
+	set opfunc=funcref('MyOpFunc')
+	set opfunc={a\ ->\ MyOpFunc(a)}
+	" set using a funcref variable
+	let Fn = function('MyTagFunc')
+	let &tagfunc = string(Fn)
+	" set using a lambda expression
+	let &tagfunc = {t -> MyTagFunc(t)}
+	" set using a variable with lambda expression
+	let L = {a, b, c -> MyTagFunc(a, b , c)}
+	let &tagfunc = L
+
+In Vim9 script, in a compiled function, you can use a lambda, but a
+closured does not work, because the function will be called without the
+context of where it was defined.
 
 
 Setting the filetype
@@ -717,7 +743,8 @@ A jump table for the options with a short description can be found at |Q_op|.
 	"double":	Use twice the width of ASCII characters.
 							*E834* *E835*
 	The value "double" cannot be used if 'listchars' or 'fillchars'
-	contains a character that would be double width.
+	contains a character that would be double width.  These errors may
+	also be given when calling setcellwidths().
 
 	The values are overruled for characters specified with
 	|setcellwidths()|.
@@ -849,9 +876,12 @@ A jump table for the options with a short description can be found at |Q_op|.
 'autowrite' 'aw'	boolean	(default off)
 			global
 	Write the contents of the file, if it has been modified, on each
-	:next, :rewind, :last, :first, :previous, :stop, :suspend, :tag, :!,
-	:make, CTRL-] and CTRL-^ command; and when a :buffer, CTRL-O, CTRL-I,
-	'{A-Z0-9}, or `{A-Z0-9} command takes one to another file.
+	`:next`, `:rewind`, `:last`, `:first`, `:previous`, `:stop`,
+	`:suspend`, `:tag, `:!`, ``:make`, CTRL-] and CTRL-^ command; and when
+	a :buffer, CTRL-O, CTRL-I, '{A-Z0-9}, or `{A-Z0-9} command takes one
+	to another file.
+	A buffer is not written if it becomes hidden, e.g. when 'bufhidden' is
+	set to "hide" and `:next` is used
 	Note that for some commands the 'autowrite' option is not used, see
 	'autowriteall' for that.
 	Some buffers will not be written, specifically when 'buftype' is
@@ -1419,6 +1449,8 @@ A jump table for the options with a short description can be found at |Q_op|.
 	Also see |win_gettype()|, which returns the type of the window.
 
 	Be careful with changing this option, it can have many side effects!
+	One such effect is that Vim will not check the timestamp of the file,
+	if the file is changed by another program this will not be noticed.
 
 	A "quickfix" buffer is only used for the error list and the location
 	list.  This value is set by the |:cwindow| and |:lwindow| commands and
@@ -1460,6 +1492,15 @@ A jump table for the options with a short description can be found at |Q_op|.
 	keepascii	For the ASCII characters (0x00 to 0x7f) use the US
 			case mapping, the current locale is not effective.
 			This probably only matters for Turkish.
+
+						*'cdhome'* *'cdh'*
+'cdhome' 'cdh'		boolean	(default: off)
+			global
+	When on, |:cd|, |:tcd| and |:lcd| without an argument changes the
+	current working directory to the |$HOME| directory like in Unix.
+	When off, those commands just print the current directory name.
+	On Unix this option has no effect.
+	NOTE: This option is reset when 'compatible' is set.
 
 						*'cdpath'* *'cd'* *E344* *E346*
 'cdpath' 'cd'		string	(default: equivalent to $CDPATH or ",,")
@@ -1802,6 +1843,7 @@ A jump table for the options with a short description can be found at |Q_op|.
 	'balloonexpr'	+ ""		text to show in evaluation balloon
 	'breakindent'	+ off		don't indent when wrapping lines
 	'cedit'		- {unchanged}	{set vim default only on resetting 'cp'}
+	'cdhome'	+ off		":cd" don't chdir to home on non-Unix
 	'cindent'	+ off		no C code indentation
 	'compatible'	- {unchanged}	{set vim default only on resetting 'cp'}
 	'copyindent'	+ off		don't copy indent structure
@@ -1917,7 +1959,9 @@ A jump table for the options with a short description can be found at |Q_op|.
 	This option specifies a function to be used for Insert mode completion
 	with CTRL-X CTRL-U. |i_CTRL-X_CTRL-U|
 	See |complete-functions| for an explanation of how the function is
-	invoked and what it should return.
+	invoked and what it should return.  The value can be the name of a
+	function, a |lambda| or a |Funcref|. See |option-value-function| for
+	more information.
 	This option cannot be set from a |modeline| or in the |sandbox|, for
 	security reasons.
 
@@ -2410,7 +2454,7 @@ A jump table for the options with a short description can be found at |Q_op|.
 	   xchacha20	XChaCha20 Cipher with Poly1305 Message Authentication
 			Code.  Medium strong till strong encryption.
 			Encryption is provided by the libsodium library, it
-			requires Vim to be built with |+sodium|
+			requires Vim to be built with |+sodium|.
 			It adds a seed and a message authentication code (MAC)
 			to the file.  This needs at least a Vim 8.2.3022 to
 			read the encrypted file.
@@ -3610,8 +3654,8 @@ A jump table for the options with a short description can be found at |Q_op|.
 	systems without an fsync() implementation, this variable is always
 	off.
 	Also see 'swapsync' for controlling fsync() on swap files.
-	'fsync' also applies to |writefile()|, unless a flag is used to
-	overrule it.
+	'fsync' also applies to |writefile()| (unless a flag is used to
+	overrule it) and when writing undo files (see |undo-persistence|).
 	This option cannot be set from a |modeline| or in the |sandbox|, for
 	security reasons.
 
@@ -3789,6 +3833,18 @@ A jump table for the options with a short description can be found at |Q_op|.
 	lines will be left for window decorations and other items on the
 	screen.  Set it to a negative value to allow windows taller than the
 	screen.
+
+						*'guiligatures'* *'gli'* *E1243*
+'guiligatures' 'gli'	string	(default "")
+			global
+			{only for GTK GUI}
+	List of ASCII characters that, when combined together, can create more
+	complex shapes. Each character must be a printable ASCII character
+	with a value in the 32-127 range.
+	Example: >
+		:set guiligatures=!\"#$%&()*+-./:<=>?@[]^_{\|~
+<	Changing this option updates screen output immediately. Set it to an
+	empty string to disable ligatures.
 
 						*'guioptions'* *'go'*
 'guioptions' 'go'	string	(default "egmrLtT"   (MS-Windows,
@@ -4164,8 +4220,6 @@ A jump table for the options with a short description can be found at |Q_op|.
 						*'icon'* *'noicon'*
 'icon'			boolean	(default off, on when title can be restored)
 			global
-			{not available when compiled without the |+title|
-			feature}
 	When on, the icon text of the window will be set to the value of
 	'iconstring' (if it is not empty), or to the name of the file
 	currently being edited.  Only the last part of the name is used.
@@ -4182,8 +4236,6 @@ A jump table for the options with a short description can be found at |Q_op|.
 						*'iconstring'*
 'iconstring'		string	(default "")
 			global
-			{not available when compiled without the |+title|
-			feature}
 	When this option is not empty, it will be used for the icon text of
 	the window.  This happens only when the 'icon' option is on.
 	Only works if the terminal supports setting window icon text
@@ -4210,7 +4262,9 @@ A jump table for the options with a short description can be found at |Q_op|.
 'imactivatefunc' 'imaf'	string (default "")
 			global
 	This option specifies a function that will be called to
-	activate or deactivate the Input Method.
+	activate or deactivate the Input Method.  The value can be the name of
+	a function, a |lambda| or a |Funcref|. See |option-value-function| for
+	more information.
 	It is not used in the MS-Windows GUI version.
 	The expression will be evaluated in the |sandbox| when set from a
 	modeline, see |sandbox-option|.
@@ -4320,6 +4374,8 @@ A jump table for the options with a short description can be found at |Q_op|.
 			global
 	This option specifies a function that is called to obtain the status
 	of Input Method.  It must return a positive number when IME is active.
+	The value can be the name of a function, a |lambda| or a |Funcref|.
+	See |option-value-function| for more information.
 	It is not used in the MS-Windows GUI version.
 
 	Example: >
@@ -4893,9 +4949,10 @@ A jump table for the options with a short description can be found at |Q_op|.
 						*'list'* *'nolist'*
 'list'			boolean	(default off)
 			local to window
-	List mode: Show tabs as CTRL-I is displayed, display $ after end of
-	line.  Useful to see the difference between tabs and spaces and for
-	trailing blanks.  Further changed by the 'listchars' option.
+	List mode: By default show tabs as CTRL-I is displayed, display $
+	after end of line.  Useful to see the difference between tabs and
+	spaces and for trailing blanks.  Further changed by the 'listchars'
+	option.
 
 	The cursor is displayed at the start of the space a Tab character
 	occupies, not at the end as usual in Normal mode.  To get this cursor
@@ -4978,12 +5035,20 @@ A jump table for the options with a short description can be found at |Q_op|.
 	be used when 'encoding' is "utf-8", otherwise only printable
 	characters are allowed.  All characters must be single width.
 
+	Each character can be specified as hex: >
+		set listchars=eol:\\x24
+		set listchars=eol:\\u21b5
+		set listchars=eol:\\U000021b5
+<	Note that a double backslash is used.  The number of hex characters
+	must be exactly 2 for \\x, 4 for \\u and 8 for \\U.
+
 	Examples: >
 	    :set lcs=tab:>-,trail:-
 	    :set lcs=tab:>-,eol:<,nbsp:%
 	    :set lcs=extends:>,precedes:<
 <	The "NonText" highlighting will be used for "eol", "extends" and
-	"precedes".  "SpecialKey" for "nbsp", "space", "tab" and "trail".
+	"precedes".  "SpecialKey" will be used for "tab", "nbsp", "space",
+	"multispace", "lead" and "trail".
 	|hl-NonText| |hl-SpecialKey|
 
 			*'lpl'* *'nolpl'* *'loadplugins'* *'noloadplugins'*
@@ -5536,8 +5601,8 @@ A jump table for the options with a short description can be found at |Q_op|.
 	number.
 	When a long, wrapped line doesn't start with the first character, '-'
 	characters are put before the number.
-	See |hl-LineNr|  and |hl-CursorLineNr| for the highlighting used for
-	the number.
+	For highlighting see |hl-LineNr|, and |hl-CursorLineNr|, and the
+	|:sign-define| "numhl" argument.
 						*number_relativenumber*
 	The 'relativenumber' option changes the displayed number to be
 	relative to the cursor.  Together with 'number' there are these
@@ -5577,7 +5642,9 @@ A jump table for the options with a short description can be found at |Q_op|.
 	This option specifies a function to be used for Insert mode omni
 	completion with CTRL-X CTRL-O. |i_CTRL-X_CTRL-O|
 	See |complete-functions| for an explanation of how the function is
-	invoked and what it should return.
+	invoked and what it should return.  The value can be the name of a
+	function, a |lambda| or a |Funcref|. See |option-value-function| for
+	more information.
 	This option is usually set by a filetype plugin:
 	|:filetype-plugin-on|
 	This option cannot be set from a |modeline| or in the |sandbox|, for
@@ -5599,7 +5666,9 @@ A jump table for the options with a short description can be found at |Q_op|.
 'operatorfunc' 'opfunc'	string	(default: empty)
 			global
 	This option specifies a function to be called by the |g@| operator.
-	See |:map-operator| for more info and an example.
+	See |:map-operator| for more info and an example.  The value can be
+	the name of a function, a |lambda| or a |Funcref|. See
+	|option-value-function| for more information.
 
 	This option cannot be set from a |modeline| or in the |sandbox|, for
 	security reasons.
@@ -5999,8 +6068,9 @@ A jump table for the options with a short description can be found at |Q_op|.
 	customize the information displayed in the quickfix or location window
 	for each entry in the corresponding quickfix or location list.  See
 	|quickfix-window-function| for an explanation of how to write the
-	function and an example. The value can be the name of a function or a
-	lambda.
+	function and an example.  The value can be the name of a function, a
+	|lambda| or a |Funcref|. See |option-value-function| for more
+	information.
 
 	This option cannot be set from a |modeline| or in the |sandbox|, for
 	security reasons.
@@ -7405,13 +7475,13 @@ A jump table for the options with a short description can be found at |Q_op|.
 	      return value of expr contains % items they will get expanded.
 	      The expression can contain the } character, the end of
 	      expression is denoted by %}.
-	      The For example: >
+	      For example: >
 		func! Stl_filename() abort
 		    return "%t"
 		endfunc
 <	        `stl=%{Stl_filename()}`   results in `"%t"`
 	        `stl=%{%Stl_filename()%}` results in `"Name of current file"`
-	} -   End of `{%` expression
+	%} -  End of `{%` expression
 	( -   Start of item group.  Can be used for setting the width and
 	      alignment of a section.  Must be followed by %) somewhere.
 	) -   End of item group.  No width fields allowed.
@@ -7754,7 +7824,9 @@ A jump table for the options with a short description can be found at |Q_op|.
 	This option specifies a function to be used to perform tag searches.
 	The function gets the tag pattern and should return a List of matching
 	tags.  See |tag-function| for an explanation of how to write the
-	function and an example.
+	function and an example.  The value can be the name of a function, a
+	|lambda| or a |Funcref|. See |option-value-function| for more
+	information.
 
 						*'taglength'* *'tl'*
 'taglength' 'tl'	number	(default 0)
@@ -7917,6 +7989,9 @@ A jump table for the options with a short description can be found at |Q_op|.
 	Number of scrollback lines to keep.  When going over this limit the
 	first 10% of the scrollback lines are deleted.  This is just to reduce
 	the memory usage.  See |Terminal-Normal|.
+	Also used as a limit for text sent to the terminal in one write,
+	multiplied by the number of columns times 3 (average number of bytes
+	per cell).
 
 						*'termwinsize'* *'tws'*
 'termwinsize' 'tws'	string	(default "")
@@ -8007,25 +8082,32 @@ A jump table for the options with a short description can be found at |Q_op|.
 'thesaurus' 'tsr'	string	(default "")
 			global or local to buffer |global-local|
 	List of file names, separated by commas, that are used to lookup words
-	for thesaurus completion commands |i_CTRL-X_CTRL-T|.
+	for thesaurus completion commands |i_CTRL-X_CTRL-T|.  See
+	|compl-thesaurus|.
 
-	Each line in the file should contain words with similar meaning,
-	separated by non-keyword characters (white space is preferred).
-	Maximum line length is 510 bytes.
-
-	An English word list was added to this github issue:
-	https://github.com/vim/vim/issues/629#issuecomment-443293282
-	Unpack thesaurus_pkg.zip, put the thesaurus.txt file somewhere, e.g.
-	~/.vim/thesaurus/english.txt, and the 'thesaurus' option to this file
-	name.
+	This option is not used if 'thesaurusfunc' is set, either for the
+	buffer or globally.
 
 	To include a comma in a file name precede it with a backslash.  Spaces
 	after a comma are ignored, otherwise spaces are included in the file
-	name.  See |option-backslash| about using backslashes.
-	The use of |:set+=| and |:set-=| is preferred when adding or removing
-	directories from the list.  This avoids problems when a future version
-	uses another default.
-	Backticks cannot be used in this option for security reasons.
+	name.  See |option-backslash| about using backslashes.  The use of
+	|:set+=| and |:set-=| is preferred when adding or removing directories
+	from the list.  This avoids problems when a future version uses
+	another default.  Backticks cannot be used in this option for security
+	reasons.
+
+						*'thesaurusfunc'* *tsrfu'*
+'thesaurusfunc' 'tsrfu'	string	(default: empty)
+			global or local to buffer |global-local|
+			{not available when compiled without the |+eval|
+			feature}
+	This option specifies a function to be used for thesaurus completion
+	with CTRL-X CTRL-T. |i_CTRL-X_CTRL-T| See |compl-thesaurusfunc|.
+	The value can be the name of a function, a |lambda| or a |Funcref|.
+	See |option-value-function| for more information.
+
+	This option cannot be set from a |modeline| or in the |sandbox|, for
+	security reasons.
 
 			     *'tildeop'* *'top'* *'notildeop'* *'notop'*
 'tildeop' 'top'		boolean	(default off)
@@ -8093,8 +8175,6 @@ A jump table for the options with a short description can be found at |Q_op|.
 						*'title'* *'notitle'*
 'title'			boolean	(default off, on when title can be restored)
 			global
-			{not available when compiled without the |+title|
-			feature}
 	When on, the title of the window will be set to the value of
 	'titlestring' (if it is not empty), or to:
 		filename [+=-] (path) - VIM
@@ -8128,8 +8208,6 @@ A jump table for the options with a short description can be found at |Q_op|.
 								*'titlelen'*
 'titlelen'		number	(default 85)
 			global
-			{not available when compiled without the |+title|
-			feature}
 	Gives the percentage of 'columns' to use for the length of the window
 	title.  When the title is longer, only the end of the path name is
 	shown.  A '<' character before the path name is used to indicate this.
@@ -8143,8 +8221,6 @@ A jump table for the options with a short description can be found at |Q_op|.
 						*'titleold'*
 'titleold'		string	(default "Thanks for flying Vim")
 			global
-			{only available when compiled with the |+title|
-			feature}
 	This option will be used for the window title when exiting Vim if the
 	original title cannot be restored.  Only happens if 'title' is on or
 	'titlestring' is not empty.
@@ -8153,8 +8229,6 @@ A jump table for the options with a short description can be found at |Q_op|.
 						*'titlestring'*
 'titlestring'		string	(default "")
 			global
-			{not available when compiled without the |+title|
-			feature}
 	When this option is not empty, it will be used for the title of the
 	window.  This happens only when the 'title' option is on.
 	Only works if the terminal supports setting window titles (currently
@@ -8780,8 +8854,9 @@ A jump table for the options with a short description can be found at |Q_op|.
 	More info here: |cmdline-completion|.
 	The character is not recognized when used inside a macro.  See
 	'wildcharm' for that.
+	Some keys will not work, such as CTRL-C, <CR> and Enter.
 	Although 'wc' is a number option, you can set it to a special key: >
-		:set wc=<Esc>
+		:set wc=<Tab>
 <	NOTE: This option is set to the Vi default value when 'compatible' is
 	set and to the Vim default value when 'compatible' is reset.
 
@@ -9130,5 +9205,17 @@ A jump table for the options with a short description can be found at |Q_op|.
 	The number of milliseconds to wait for each character sent to the
 	screen.  When non-zero, characters are sent to the terminal one by
 	one.  For debugging purposes.
+
+					   *'xtermcodes'* *'noxtermcodes'*
+'xtermcodes'		boolean	(default on)
+			global
+	When detecting xterm patchlevel 141 or higher with the termresponse
+	mechanism and this option is set, Vim will request the actual termimal
+	key codes and number of colors from the terminal.  This takes care of
+	various configuration options of the terminal that cannot be obtained
+	from the termlib/terminfo entry, see |xterm-codes|.
+	A side effect may be that t_Co changes and Vim will redraw the
+	display.
+
 
  vim:tw=78:ts=8:noet:ft=help:norl:

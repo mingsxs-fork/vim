@@ -82,10 +82,10 @@ skip_string(char_u *p)
     {
 	if (p[0] == '\'')		    // 'c' or '\n' or '\000'
 	{
-	    if (!p[1])			    // ' at end of line
+	    if (p[1] == NUL)		    // ' at end of line
 		break;
 	    i = 2;
-	    if (p[1] == '\\')		    // '\n' or '\000'
+	    if (p[1] == '\\' && p[2] != NUL)    // '\n' or '\000'
 	    {
 		++i;
 		while (vim_isdigit(p[i - 1]))   // '\000'
@@ -755,6 +755,10 @@ cin_is_cpp_namespace(char_u *s)
     int		has_name_start = FALSE;
 
     s = cin_skipcomment(s);
+
+    if (STRNCMP(s, "inline", 6) == 0 && (s[6] == NUL || !vim_iswordc(s[6])))
+	s = cin_skipcomment(skipwhite(s + 6));
+
     if (STRNCMP(s, "namespace", 9) == 0 && (s[9] == NUL || !vim_iswordc(s[9])))
     {
 	p = cin_skipcomment(skipwhite(s + 9));
@@ -1637,10 +1641,10 @@ get_baseclass_amount(int col)
     static pos_T *
 find_start_brace(void)	    // XXX
 {
-    pos_T	cursor_save;
-    pos_T	*trypos;
-    pos_T	*pos;
-    static pos_T	pos_copy;
+    pos_T	    cursor_save;
+    pos_T	    *trypos;
+    pos_T	    *pos;
+    static pos_T    pos_copy;
 
     cursor_save = curwin->w_cursor;
     while ((trypos = findmatchlimit(NULL, '{', FM_BLOCKSTOP, 0)) != NULL)
@@ -1654,7 +1658,7 @@ find_start_brace(void)	    // XXX
 		       && (pos = ind_find_start_CORS(NULL)) == NULL) // XXX
 	    break;
 	if (pos != NULL)
-	    curwin->w_cursor.lnum = pos->lnum;
+	    curwin->w_cursor = *pos;
     }
     curwin->w_cursor = cursor_save;
     return trypos;
@@ -2144,13 +2148,30 @@ get_c_indent(void)
 
     // If we're inside a "//" comment and there is a "//" comment in a
     // previous line, lineup with that one.
-    if (cin_islinecomment(theline)
-	    && (trypos = find_line_comment()) != NULL) // XXX
+    if (cin_islinecomment(theline))
     {
-	// find how indented the line beginning the comment is
-	getvcol(curwin, trypos, &col, NULL, NULL);
-	amount = col;
-	goto theend;
+	pos_T	linecomment_pos;
+
+	trypos = find_line_comment(); // XXX
+	if (trypos == NULL && curwin->w_cursor.lnum > 1)
+	{
+	    // There may be a statement before the comment, search from the end
+	    // of the line for a comment start.
+	    linecomment_pos.col =
+			  check_linecomment(ml_get(curwin->w_cursor.lnum - 1));
+	    if (linecomment_pos.col != MAXCOL)
+	    {
+	        trypos = &linecomment_pos;
+	        trypos->lnum = curwin->w_cursor.lnum - 1;
+	    }
+	}
+	if (trypos  != NULL)
+	{
+	    // find how indented the line beginning the comment is
+	    getvcol(curwin, trypos, &col, NULL, NULL);
+	    amount = col;
+	    goto theend;
+	}
     }
 
     // If we're inside a comment and not looking at the start of the

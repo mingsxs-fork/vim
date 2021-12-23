@@ -288,6 +288,10 @@ func Test_listchars_unicode()
   call cursor(1, 1)
   call assert_equal(expected, ScreenLines(1, virtcol('$')))
 
+  set listchars=eol:\\u21d4,space:\\u2423,multispace:≡\\u2262\\U00002263,nbsp:\\U00002260,tab:←↔\\u2192
+  redraw!
+  call assert_equal(expected, ScreenLines(1, virtcol('$')))
+
   set listchars+=lead:⇨,trail:⇦
   let expected = ['⇨⇨⇨⇨⇨⇨⇨⇨a←↔↔↔↔↔→b␣c≠d⇦⇦⇔']
   redraw!
@@ -329,13 +333,27 @@ func Test_listchars_invalid()
   call assert_fails('set listchars=space:xx', 'E474:')
   call assert_fails('set listchars=tab:xxxx', 'E474:')
 
-  " Has non-single width character
+  " Has double-width character
   call assert_fails('set listchars=space:·', 'E474:')
   call assert_fails('set listchars=tab:·x', 'E474:')
   call assert_fails('set listchars=tab:x·', 'E474:')
   call assert_fails('set listchars=tab:xx·', 'E474:')
   call assert_fails('set listchars=multispace:·', 'E474:')
   call assert_fails('set listchars=multispace:xxx·', 'E474:')
+
+  " Has control character
+  call assert_fails("set listchars=space:\x01", 'E474:')
+  call assert_fails("set listchars=tab:\x01x", 'E474:')
+  call assert_fails("set listchars=tab:x\x01", 'E474:')
+  call assert_fails("set listchars=tab:xx\x01", 'E474:')
+  call assert_fails("set listchars=multispace:\x01", 'E474:')
+  call assert_fails("set listchars=multispace:xxx\x01", 'E474:')
+  call assert_fails('set listchars=space:\\x01', 'E474:')
+  call assert_fails('set listchars=tab:\\x01x', 'E474:')
+  call assert_fails('set listchars=tab:x\\x01', 'E474:')
+  call assert_fails('set listchars=tab:xx\\x01', 'E474:')
+  call assert_fails('set listchars=multispace:\\x01', 'E474:')
+  call assert_fails('set listchars=multispace:xxx\\x01', 'E474:')
 
   enew!
   set ambiwidth& listchars& ff&
@@ -441,7 +459,7 @@ func Test_listchars_window_local()
   call assert_equal(['{......}--one==two##$'], ScreenLines(1, virtcol('$')))
 
   " Setting the global setting to the default value should not impact a window
-  " using a local setting
+  " using a local setting.
   split
   setlocal listchars=tab:<->,lead:_,space:.,trail:@,eol:#
   setglobal listchars&vim
@@ -450,7 +468,7 @@ func Test_listchars_window_local()
   call assert_equal(['^I  one  two  $'], ScreenLines(1, virtcol('$')))
 
   " Setting the local setting to the default value should not impact a window
-  " using a global setting
+  " using a global setting.
   set listchars=tab:{.},lead:-,space:=,trail:#,eol:$
   split
   setlocal listchars=tab:<->,lead:_,space:.,trail:@,eol:#
@@ -461,7 +479,7 @@ func Test_listchars_window_local()
   call assert_equal(['{......}--one==two##$'], ScreenLines(1, virtcol('$')))
 
   " Using set in a window with a local setting should change it to use the
-  " global setting and also impact other windows using the global setting
+  " global setting and also impact other windows using the global setting.
   split
   setlocal listchars=tab:<->,lead:_,space:.,trail:@,eol:#
   call assert_equal(['<------>__one..two@@#'], ScreenLines(1, virtcol('$')))
@@ -471,7 +489,7 @@ func Test_listchars_window_local()
   call assert_equal(['+------+^^one>>two<<%'], ScreenLines(1, virtcol('$')))
 
   " Setting invalid value for a local setting should not impact the local and
-  " global settings
+  " global settings.
   split
   setlocal listchars=tab:<->,lead:_,space:.,trail:@,eol:#
   let cmd = 'setlocal listchars=tab:{.},lead:-,space:=,trail:#,eol:$,x'
@@ -481,7 +499,7 @@ func Test_listchars_window_local()
   call assert_equal(['+------+^^one>>two<<%'], ScreenLines(1, virtcol('$')))
 
   " Setting invalid value for a global setting should not impact the local and
-  " global settings
+  " global settings.
   split
   setlocal listchars=tab:<->,lead:_,space:.,trail:@,eol:#
   let cmd = 'setglobal listchars=tab:{.},lead:-,space:=,trail:#,eol:$,x'
@@ -489,6 +507,12 @@ func Test_listchars_window_local()
   call assert_equal(['<------>__one..two@@#'], ScreenLines(1, virtcol('$')))
   close
   call assert_equal(['+------+^^one>>two<<%'], ScreenLines(1, virtcol('$')))
+
+  " Closing window with local lcs-multispace should not cause a memory leak.
+  setlocal listchars=multispace:---+
+  split
+  call s:CheckListCharsValue('multispace:---+')
+  close
 
   %bw!
   set list& listchars&

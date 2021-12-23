@@ -421,9 +421,7 @@ free_all_mem(void)
 # endif
     }
 
-# ifdef FEAT_TITLE
     free_titles();
-# endif
 # if defined(FEAT_SEARCHPATH)
     free_findfile();
 # endif
@@ -442,6 +440,7 @@ free_all_mem(void)
     free_prev_shellcmd();
     free_regexp_stuff();
     free_tag_stuff();
+    free_xim_stuff();
     free_cd_dir();
 # ifdef FEAT_SIGNS
     free_signs();
@@ -561,6 +560,7 @@ free_all_mem(void)
 # endif
 
     free_termoptions();
+    free_cur_term();
 
     // screenlines (can't display anything now!)
     free_screenlines();
@@ -573,6 +573,9 @@ free_all_mem(void)
 # endif
 # ifdef FEAT_GUI_GTK
     gui_mch_free_all();
+# endif
+# ifdef FEAT_TCL
+    vim_tcl_finalize();
 # endif
     clear_hl_tables();
 

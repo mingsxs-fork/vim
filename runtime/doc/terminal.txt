@@ -1,4 +1,4 @@
-*terminal.txt*	For Vim version 8.2.  Last change: 2021 Aug 15
+*terminal.txt*	For Vim version 8.2.  Last change: 2021 Nov 13
 
 
 		  VIM REFERENCE MANUAL	  by Bram Moolenaar
@@ -168,9 +168,6 @@ terminal window will start with a white or black background.
 To use a different color the Terminal highlight group can be used, for
 example: >
     hi Terminal ctermbg=lightgrey ctermfg=blue guibg=lightgrey guifg=blue
-The highlight needs to be defined before the terminal is created.  Doing it
-later, or setting 'wincolor', will only have effect when the program running
-in the terminal displays text or clears the terminal.
 Instead of Terminal another group can be specified with the "term_highlight"
 option for `term_start()`.
 
@@ -243,7 +240,7 @@ Command syntax ~
 			++shell		Instead of executing {command}
 					directly, use a shell, like with
 					`:!command` 		*E279*
-					{only works on Unix currently}
+					{only works on Unix and MS-Windows}
 			++kill={how}	When trying to close the terminal
 					window kill the job with {how}.  See
 					|term_setkill()| for the values.
@@ -874,7 +871,8 @@ term_start({cmd} [, {options}])			*term_start()*
 		   "term_name"	     name to use for the buffer name, instead
 				     of the command name.
 		   "term_rows"	     vertical size to use for the terminal,
-				     instead of using 'termwinsize'
+				     instead of using 'termwinsize'; valid
+				     range is from zero to 1000
 		   "term_cols"	     horizontal size to use for the terminal,
 				     instead of using 'termwinsize'
 		   "vertical"	     split the window vertically; note that

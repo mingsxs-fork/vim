@@ -208,4 +208,42 @@ func Test_cd_completion()
   call delete('XComplFile')
 endfunc
 
+func Test_cd_unknown_dir()
+  call mkdir('Xa')
+  cd Xa
+  call writefile(['text'], 'Xb.txt')
+  edit Xa/Xb.txt
+  let first_buf = bufnr()
+  cd ..
+  edit
+  call assert_equal(first_buf, bufnr())
+  edit Xa/Xb.txt
+  call assert_notequal(first_buf, bufnr())
+
+  bwipe!
+  exe "bwipe! " .. first_buf
+  call delete('Xa', 'rf')
+endfunc
+
+func Test_getcwd_actual_dir()
+  CheckOption autochdir
+
+  let startdir = getcwd()
+  call mkdir('Xactual')
+  call test_autochdir()
+  set autochdir
+  edit Xactual/file.txt
+  call assert_match('testdir.Xactual$', getcwd())
+  lcd ..
+  call assert_match('testdir$', getcwd())
+  edit
+  call assert_match('testdir.Xactual$', getcwd())
+  call assert_match('testdir$', getcwd(win_getid()))
+
+  set noautochdir
+  bwipe!
+  call chdir(startdir)
+  call delete('Xactual', 'rf')
+endfunc
+
 " vim: shiftwidth=2 sts=2 expandtab

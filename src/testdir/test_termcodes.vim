@@ -314,8 +314,8 @@ func Test_term_mouse_middle_click_insert_mode()
     call setline(1, ['123456789', '123456789'])
     let @* = 'abc'
 
-    " Middle-click in inesrt mode doesn't move the cursor but inserts the
-    " contents of aregister
+    " Middle-click in insert mode doesn't move the cursor but inserts the
+    " contents of a register
     call cursor(1, 4)
     call feedkeys('i' ..
           \ MouseMiddleClickCode(2, 7) .. MouseMiddleReleaseCode(2, 7) ..
@@ -365,7 +365,7 @@ func Test_term_mouse_switch_win_insert_mode()
   close!
 endfunc
 
-" Test for using the mouse to increaes the height of the cmdline window
+" Test for using the mouse to increase the height of the cmdline window
 func Test_mouse_cmdwin_resize()
   CheckFeature cmdwin
 
@@ -2037,6 +2037,32 @@ func Test_modifyOtherKeys_no_mapping()
   bwipe!
 
   set timeoutlen&
+endfunc
+
+" Check that when DEC mouse codes are recognized a special key is handled.
+func Test_ignore_dec_mouse()
+  silent !infocmp gnome >/dev/null 2>&1
+  if v:shell_error != 0
+    throw 'Skipped: gnome entry missing in the terminfo db'
+  endif
+
+  new
+  let save_mouse = &mouse
+  let save_term = &term
+  let save_ttymouse = &ttymouse
+  call test_override('no_query_mouse', 1)
+  set mouse=a term=gnome ttymouse=
+
+  execute "set <xF1>=\<Esc>[1;*P"
+  nnoremap <S-F1> agot it<Esc>
+  call feedkeys("\<Esc>[1;2P", 'Lx!')
+  call assert_equal('got it', getline(1))
+
+  let &mouse = save_mouse
+  let &term = save_term
+  let &ttymouse = save_ttymouse
+  call test_override('no_query_mouse', 0)
+  bwipe!
 endfunc
 
 func RunTest_mapping_shift(key, func)

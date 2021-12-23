@@ -56,10 +56,10 @@ static int put_setstring(FILE *fd, char *cmd, char *name, char_u **valuep, long_
 static int put_setnum(FILE *fd, char *cmd, char *name, long *valuep);
 static int put_setbool(FILE *fd, char *cmd, char *name, int value);
 static int istermoption(struct vimoption *p);
-static char_u *get_varp_scope(struct vimoption *p, int opt_flags);
+static char_u *get_varp_scope(struct vimoption *p, int scope);
 static char_u *get_varp(struct vimoption *);
 static void check_win_options(win_T *win);
-static void option_value2string(struct vimoption *, int opt_flags);
+static void option_value2string(struct vimoption *, int scope);
 static void check_winopt(winopt_T *wop);
 static int wc_use_keyname(char_u *varp, long *wcp);
 static void paste_option_changed(void);
@@ -809,6 +809,8 @@ free_all_options(void)
 	    // buffer-local option: free global value
 	    clear_string_option((char_u **)options[i].var);
     }
+    free_operatorfunc_option();
+    free_tagfunc_option();
 }
 #endif
 
@@ -1100,9 +1102,7 @@ set_init_3(void)
 	    set_fileformat(default_fileformat(), OPT_LOCAL);
     }
 
-#ifdef FEAT_TITLE
     set_title_defaults();
-#endif
 }
 
 #if defined(FEAT_MULTI_LANG) || defined(PROTO)
@@ -1146,7 +1146,6 @@ set_helplang_default(char_u *lang)
 }
 #endif
 
-#ifdef FEAT_TITLE
 /*
  * 'title' and 'icon' only default to true if they have not been set or reset
  * in .vimrc and we can read the old value.
@@ -1190,7 +1189,6 @@ set_title_defaults(void)
 	p_icon = val;
     }
 }
-#endif
 
     void
 ex_set(exarg_T *eap)
@@ -1220,11 +1218,12 @@ ex_set(exarg_T *eap)
  * does not need to be expanded with option_expand().
  * "opt_flags":
  * 0 for ":set"
- * OPT_GLOBAL   for ":setglobal"
- * OPT_LOCAL    for ":setlocal" and a modeline
- * OPT_MODELINE for a modeline
- * OPT_WINONLY  to only set window-local options
- * OPT_NOWIN	to skip setting window-local options
+ * OPT_GLOBAL     for ":setglobal"
+ * OPT_LOCAL      for ":setlocal" and a modeline
+ * OPT_MODELINE   for a modeline
+ * OPT_WINONLY    to only set window-local options
+ * OPT_NOWIN	  to skip setting window-local options
+ * OPT_ONECOLUMN  do not use multiple columns
  *
  * returns FAIL if an error is detected, OK otherwise
  */
@@ -1292,7 +1291,7 @@ do_set(
 	else if (STRNCMP(arg, "termcap", 7) == 0 && !(opt_flags & OPT_MODELINE))
 	{
 	    showoptions(2, opt_flags);
-	    show_termcodes();
+	    show_termcodes(opt_flags);
 	    did_show = TRUE;
 	    arg += 7;
 	}
@@ -2270,7 +2269,6 @@ string_to_key(char_u *arg, int multi_byte)
     return *arg;
 }
 
-#ifdef FEAT_TITLE
 /*
  * When changing 'title', 'titlestring', 'icon' or 'iconstring', call
  * maketitle() to create and display it.
@@ -2287,7 +2285,6 @@ did_set_title(void)
 				)
 	maketitle();
 }
-#endif
 
 /*
  * set_options_bin -  called when 'bin' changes value.
@@ -2556,7 +2553,6 @@ insecure_flag(int opt_idx, int opt_flags)
 }
 #endif
 
-#if defined(FEAT_TITLE) || defined(PROTO)
 /*
  * Redraw the window title and/or tab page text later.
  */
@@ -2565,7 +2561,6 @@ void redraw_titles(void)
     need_maketitle = TRUE;
     redraw_tabline = TRUE;
 }
-#endif
 
 /*
  * Return TRUE if "val" is a valid name: only consists of alphanumeric ASCII
@@ -2807,9 +2802,7 @@ set_bool_option(
 	if (curbuf->b_p_ro)
 	    curbuf->b_did_warn = FALSE;
 
-#ifdef FEAT_TITLE
 	redraw_titles();
-#endif
     }
 
 #ifdef FEAT_GUI
@@ -2832,11 +2825,8 @@ set_bool_option(
 	    return N_("E946: Cannot make a terminal with running job modifiable");
 	}
 # endif
-# ifdef FEAT_TITLE
 	redraw_titles();
-# endif
     }
-#ifdef FEAT_TITLE
     // when 'endofline' is changed, redraw the window title
     else if ((int *)varp == &curbuf->b_p_eol)
     {
@@ -2852,15 +2842,12 @@ set_bool_option(
     {
 	redraw_titles();
     }
-#endif
 
     // when 'bin' is set also set some other options
     else if ((int *)varp == &curbuf->b_p_bin)
     {
 	set_options_bin(old_value, curbuf->b_p_bin, opt_flags);
-#ifdef FEAT_TITLE
 	redraw_titles();
-#endif
     }
 
     // when 'buflisted' changes, trigger autocommands
@@ -2994,21 +2981,17 @@ set_bool_option(
     }
 #endif
 
-#ifdef FEAT_TITLE
     // when 'title' changed, may need to change the title; same for 'icon'
     else if ((int *)varp == &p_title || (int *)varp == &p_icon)
     {
 	did_set_title();
     }
-#endif
 
     else if ((int *)varp == &curbuf->b_changed)
     {
 	if (!value)
 	    save_file_ff(curbuf);	// Buffer is unchanged
-#ifdef FEAT_TITLE
 	redraw_titles();
-#endif
 	modified_was_set = value;
     }
 
@@ -3257,6 +3240,10 @@ set_bool_option(
 	    set_termname(T_NAME);
 	    init_highlight(TRUE, FALSE);
 	}
+# endif
+# ifdef FEAT_TERMINAL
+	term_update_colors_all();
+	term_update_wincolor_all();
 # endif
     }
 #endif
@@ -3560,7 +3547,6 @@ set_num_option(
 	p_imsearch = curbuf->b_p_imsearch;
     }
 
-#ifdef FEAT_TITLE
     // if 'titlelen' has changed, redraw the title
     else if (pp == &p_titlelen)
     {
@@ -3572,7 +3558,6 @@ set_num_option(
 	if (starting != NO_SCREEN && old_value != p_titlelen)
 	    need_maketitle = TRUE;
     }
-#endif
 
     // if p_ch changed value, change the command line height
     else if (pp == &p_ch)
@@ -3952,13 +3937,16 @@ findoption(char_u *arg)
  * Hidden Toggle option: gov_hidden_bool.
  * Hidden String option: gov_hidden_string.
  * Unknown option: gov_unknown.
+ *
+ * "flagsp" (if not NULL) is set to the option flags (P_xxxx).
  */
     getoption_T
 get_option_value(
     char_u	*name,
     long	*numval,
     char_u	**stringval,	    // NULL when only checking existence
-    int		opt_flags)
+    int		*flagsp,
+    int		scope)
 {
     int		opt_idx;
     char_u	*varp;
@@ -3996,7 +3984,11 @@ get_option_value(
 	return gov_unknown;
     }
 
-    varp = get_varp_scope(&(options[opt_idx]), opt_flags);
+    varp = get_varp_scope(&(options[opt_idx]), scope);
+
+    if (flagsp != NULL)
+	// Return the P_xxxx option flags.
+	*flagsp = options[opt_idx].flags;
 
     if (options[opt_idx].flags & P_STRING)
     {
@@ -4965,9 +4957,7 @@ clear_termoptions(void)
      * screen will be cleared later, so this is OK.
      */
     mch_setmouse(FALSE);	    // switch mouse off
-#ifdef FEAT_TITLE
     mch_restore_title(SAVE_RESTORE_BOTH);    // restore window titles
-#endif
 #if defined(FEAT_XCLIPBOARD) && defined(FEAT_GUI)
     // When starting the GUI close the display opened for the clipboard.
     // After restoring the title, because that will need the display.
@@ -5131,6 +5121,11 @@ unset_global_local_option(char_u *name, void *from)
 	case PV_TSR:
 	    clear_string_option(&buf->b_p_tsr);
 	    break;
+#ifdef FEAT_COMPL_FUNC
+	case PV_TSRFU:
+	    clear_string_option(&buf->b_p_tsrfu);
+	    break;
+#endif
 	case PV_FP:
 	    clear_string_option(&buf->b_p_fp);
 	    break;
@@ -5191,17 +5186,18 @@ unset_global_local_option(char_u *name, void *from)
 
 /*
  * Get pointer to option variable, depending on local or global scope.
+ * "scope" can be OPT_LOCAL, OPT_GLOBAL or a combination.
  */
     static char_u *
-get_varp_scope(struct vimoption *p, int opt_flags)
+get_varp_scope(struct vimoption *p, int scope)
 {
-    if ((opt_flags & OPT_GLOBAL) && p->indir != PV_NONE)
+    if ((scope & OPT_GLOBAL) && p->indir != PV_NONE)
     {
 	if (p->var == VAR_WIN)
 	    return (char_u *)GLOBAL_WO(get_varp(p));
 	return p->var;
     }
-    if ((opt_flags & OPT_LOCAL) && ((int)p->indir & PV_BOTH))
+    if ((scope & OPT_LOCAL) && ((int)p->indir & PV_BOTH))
     {
 	switch ((int)p->indir)
 	{
@@ -5225,6 +5221,9 @@ get_varp_scope(struct vimoption *p, int opt_flags)
 #endif
 	    case PV_DICT: return (char_u *)&(curbuf->b_p_dict);
 	    case PV_TSR:  return (char_u *)&(curbuf->b_p_tsr);
+#ifdef FEAT_COMPL_FUNC
+	    case PV_TSRFU: return (char_u *)&(curbuf->b_p_tsrfu);
+#endif
 #if defined(FEAT_BEVAL) && defined(FEAT_EVAL)
 	    case PV_BEXPR: return (char_u *)&(curbuf->b_p_bexpr);
 #endif
@@ -5257,9 +5256,9 @@ get_varp_scope(struct vimoption *p, int opt_flags)
  * scope.
  */
     char_u *
-get_option_varp_scope(int opt_idx, int opt_flags)
+get_option_varp_scope(int opt_idx, int scope)
 {
-    return get_varp_scope(&(options[opt_idx]), opt_flags);
+    return get_varp_scope(&(options[opt_idx]), scope);
 }
 
 /*
@@ -5305,6 +5304,10 @@ get_varp(struct vimoption *p)
 				    ? (char_u *)&(curbuf->b_p_dict) : p->var;
 	case PV_TSR:	return *curbuf->b_p_tsr != NUL
 				    ? (char_u *)&(curbuf->b_p_tsr) : p->var;
+#ifdef FEAT_COMPL_FUNC
+	case PV_TSRFU:	return *curbuf->b_p_tsrfu != NUL
+				    ? (char_u *)&(curbuf->b_p_tsrfu) : p->var;
+#endif
 	case PV_FP:	return *curbuf->b_p_fp != NUL
 				    ? (char_u *)&(curbuf->b_p_fp) : p->var;
 #ifdef FEAT_QUICKFIX
@@ -5922,7 +5925,7 @@ buf_copy_options(buf_T *buf, int flags)
 	    else
 	    {
 		buf->b_p_swf = p_swf;
-		COPY_OPT_SCTX(buf, BV_INF);
+		COPY_OPT_SCTX(buf, BV_SWF);
 	    }
 	    buf->b_p_cpt = vim_strsave(p_cpt);
 	    COPY_OPT_SCTX(buf, BV_CPT);
@@ -5933,12 +5936,15 @@ buf_copy_options(buf_T *buf, int flags)
 #ifdef FEAT_COMPL_FUNC
 	    buf->b_p_cfu = vim_strsave(p_cfu);
 	    COPY_OPT_SCTX(buf, BV_CFU);
+	    set_buflocal_cfu_callback(buf);
 	    buf->b_p_ofu = vim_strsave(p_ofu);
 	    COPY_OPT_SCTX(buf, BV_OFU);
+	    set_buflocal_ofu_callback(buf);
 #endif
 #ifdef FEAT_EVAL
 	    buf->b_p_tfu = vim_strsave(p_tfu);
 	    COPY_OPT_SCTX(buf, BV_TFU);
+	    set_buflocal_tfu_callback(buf);
 #endif
 	    buf->b_p_sts = p_sts;
 	    COPY_OPT_SCTX(buf, BV_STS);
@@ -6077,6 +6083,9 @@ buf_copy_options(buf_T *buf, int flags)
 #endif
 	    buf->b_p_dict = empty_option;
 	    buf->b_p_tsr = empty_option;
+#ifdef FEAT_COMPL_FUNC
+	    buf->b_p_tsrfu = empty_option;
+#endif
 #ifdef FEAT_TEXTOBJ
 	    buf->b_p_qe = vim_strsave(p_qe);
 	    COPY_OPT_SCTX(buf, BV_QE);
@@ -6118,6 +6127,7 @@ buf_copy_options(buf_T *buf, int flags)
 		COPY_OPT_SCTX(buf, BV_ISK);
 		did_isk = TRUE;
 		buf->b_p_ts = p_ts;
+		COPY_OPT_SCTX(buf, BV_TS);
 #ifdef FEAT_VARTABS
 		buf->b_p_vts = vim_strsave(p_vts);
 		COPY_OPT_SCTX(buf, BV_VTS);
@@ -6391,8 +6401,6 @@ set_context_in_set_cmd(
 	}
 #endif
     }
-
-    return;
 }
 
     int
@@ -6619,11 +6627,11 @@ ExpandOldSetting(int *num_file, char_u ***file)
     static void
 option_value2string(
     struct vimoption	*opp,
-    int			opt_flags)	// OPT_GLOBAL and/or OPT_LOCAL
+    int			scope)	// OPT_GLOBAL and/or OPT_LOCAL
 {
     char_u	*varp;
 
-    varp = get_varp_scope(opp, opt_flags);
+    varp = get_varp_scope(opp, scope);
 
     if (opp->flags & P_NUM)
     {
@@ -7170,4 +7178,75 @@ magic_isset(void)
 	return TRUE;
 #endif
     return p_magic;
+}
+
+/*
+ * Set the callback function value for an option that accepts a function name,
+ * lambda, et al. (e.g. 'operatorfunc', 'tagfunc', etc.)
+ * Returns OK if the option is successfully set to a function, otherwise
+ * returns FAIL.
+ */
+    int
+option_set_callback_func(char_u *optval UNUSED, callback_T *optcb UNUSED)
+{
+#ifdef FEAT_EVAL
+    typval_T	*tv;
+    callback_T	cb;
+
+    if (optval == NULL || *optval == NUL)
+    {
+	free_callback(optcb);
+	return OK;
+    }
+
+    if (*optval == '{' || (in_vim9script() && *optval == '(')
+	    || (STRNCMP(optval, "function(", 9) == 0)
+	    || (STRNCMP(optval, "funcref(", 8) == 0))
+	// Lambda expression or a funcref
+	tv = eval_expr(optval, NULL);
+    else
+    {
+	// treat everything else as a function name string
+
+	// Function name starting with "s:" are supported only in a vimscript
+	// context.
+	if (STRNCMP(optval, "s:", 2) == 0)
+	{
+	    char	sid_buf[25];
+	    char_u	*funcname;
+
+	    if (!SCRIPT_ID_VALID(current_sctx.sc_sid))
+	    {
+		emsg(_(e_using_sid_not_in_script_context));
+		return FAIL;
+	    }
+	    // Expand s: prefix into <SNR>nr_<name>
+	    sprintf(sid_buf, "<SNR>%ld_", (long)current_sctx.sc_sid);
+	    funcname = alloc(STRLEN(sid_buf) + STRLEN(optval + 2) + 1);
+	    if (funcname == NULL)
+		return FAIL;
+	    STRCPY(funcname, sid_buf);
+	    STRCAT(funcname, optval + 2);
+	    tv = alloc_string_tv(funcname);
+	}
+	else
+	    tv = alloc_string_tv(vim_strsave(optval));
+    }
+    if (tv == NULL)
+	return FAIL;
+
+    cb = get_callback(tv);
+    if (cb.cb_name == NULL || *cb.cb_name == NUL)
+    {
+	free_tv(tv);
+	return FAIL;
+    }
+
+    free_callback(optcb);
+    set_callback(optcb, &cb);
+    free_tv(tv);
+    return OK;
+#else
+    return FAIL;
+#endif
 }

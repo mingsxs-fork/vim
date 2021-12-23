@@ -149,6 +149,10 @@ static struct vimvar
     {VV_NAME("argv",		 VAR_LIST), VV_RO},
     {VV_NAME("collate",		 VAR_STRING), VV_RO},
     {VV_NAME("exiting",		 VAR_SPECIAL), VV_RO},
+    {VV_NAME("colornames",       VAR_DICT), VV_RO},
+    {VV_NAME("sizeofint",	 VAR_NUMBER), VV_RO},
+    {VV_NAME("sizeoflong",	 VAR_NUMBER), VV_RO},
+    {VV_NAME("sizeofpointer",	 VAR_NUMBER), VV_RO},
 };
 
 // shorthand
@@ -233,6 +237,9 @@ evalvars_init(void)
     set_vim_var_nr(VV_NUMBERMAX, VARNUM_MAX);
     set_vim_var_nr(VV_NUMBERMIN, VARNUM_MIN);
     set_vim_var_nr(VV_NUMBERSIZE, sizeof(varnumber_T) * 8);
+    set_vim_var_nr(VV_SIZEOFINT, sizeof(int));
+    set_vim_var_nr(VV_SIZEOFLONG, sizeof(long));
+    set_vim_var_nr(VV_SIZEOFPOINTER, sizeof(char *));
 
     set_vim_var_nr(VV_TYPE_NUMBER,  VAR_TYPE_NUMBER);
     set_vim_var_nr(VV_TYPE_STRING,  VAR_TYPE_STRING);
@@ -247,6 +254,8 @@ evalvars_init(void)
     set_vim_var_nr(VV_TYPE_BLOB,    VAR_TYPE_BLOB);
 
     set_vim_var_nr(VV_ECHOSPACE,    sc_col - 1);
+
+    set_vim_var_dict(VV_COLORNAMES, dict_alloc());
 
     // Default for v:register is not 0 but '"'.  This is adjusted once the
     // clipboard has been setup by calling reset_reg_var().
@@ -872,7 +881,7 @@ ex_let(exarg_T *eap)
 	    else
 		++expr;
 
-	    if (vim9script && (!VIM_ISWHITE(*argend)
+	    if (vim9script && !eap->skip && (!VIM_ISWHITE(*argend)
 						   || !IS_WHITE_OR_NUL(*expr)))
 	    {
 		vim_strncpy(op, expr - len, len);
@@ -1280,6 +1289,253 @@ list_arg_vars(exarg_T *eap, char_u *arg, int *first)
 }
 
 /*
+ * Set an environment variable, part of ex_let_one().
+ */
+    static char_u *
+ex_let_env(
+    char_u	*arg,
+    typval_T	*tv,
+    int		flags,
+    char_u	*endchars,
+    char_u	*op)
+{
+    char_u	*arg_end = NULL;
+    char_u	*name;
+    int		len;
+
+    if ((flags & (ASSIGN_CONST | ASSIGN_FINAL))
+					 && (flags & ASSIGN_FOR_LOOP) == 0)
+    {
+	emsg(_("E996: Cannot lock an environment variable"));
+	return NULL;
+    }
+
+    // Find the end of the name.
+    ++arg;
+    name = arg;
+    len = get_env_len(&arg);
+    if (len == 0)
+	semsg(_(e_invarg2), name - 1);
+    else
+    {
+	if (op != NULL && vim_strchr((char_u *)"+-*/%", *op) != NULL)
+	    semsg(_(e_letwrong), op);
+	else if (endchars != NULL
+			      && vim_strchr(endchars, *skipwhite(arg)) == NULL)
+	    emsg(_(e_unexpected_characters_in_let));
+	else if (!check_secure())
+	{
+	    char_u	*tofree = NULL;
+	    int		c1 = name[len];
+	    char_u	*p;
+
+	    name[len] = NUL;
+	    p = tv_get_string_chk(tv);
+	    if (p != NULL && op != NULL && *op == '.')
+	    {
+		int	mustfree = FALSE;
+		char_u  *s = vim_getenv(name, &mustfree);
+
+		if (s != NULL)
+		{
+		    p = tofree = concat_str(s, p);
+		    if (mustfree)
+			vim_free(s);
+		}
+	    }
+	    if (p != NULL)
+	    {
+		vim_setenv_ext(name, p);
+		arg_end = arg;
+	    }
+	    name[len] = c1;
+	    vim_free(tofree);
+	}
+    }
+    return arg_end;
+}
+
+/*
+ * Set an option, part of ex_let_one().
+ */
+    static char_u *
+ex_let_option(
+    char_u	*arg,
+    typval_T	*tv,
+    int		flags,
+    char_u	*endchars,
+    char_u	*op)
+{
+    char_u	*p;
+    int		scope;
+    char_u	*arg_end = NULL;
+
+    if ((flags & (ASSIGN_CONST | ASSIGN_FINAL))
+					 && (flags & ASSIGN_FOR_LOOP) == 0)
+    {
+	emsg(_(e_const_option));
+	return NULL;
+    }
+
+    // Find the end of the name.
+    p = find_option_end(&arg, &scope);
+    if (p == NULL || (endchars != NULL
+			       && vim_strchr(endchars, *skipwhite(p)) == NULL))
+	emsg(_(e_unexpected_characters_in_let));
+    else
+    {
+	int	    c1;
+	long	    n = 0;
+	getoption_T opt_type;
+	long	    numval;
+	char_u	    *stringval = NULL;
+	char_u	    *s = NULL;
+	int	    failed = FALSE;
+	int	    opt_p_flags;
+	char_u	    *tofree = NULL;
+	char_u	    numbuf[NUMBUFLEN];
+
+	c1 = *p;
+	*p = NUL;
+
+	opt_type = get_option_value(arg, &numval, &stringval, &opt_p_flags,
+									scope);
+	if ((opt_type == gov_bool
+		    || opt_type == gov_number
+		    || opt_type == gov_hidden_bool
+		    || opt_type == gov_hidden_number)
+			 && (tv->v_type != VAR_STRING || !in_vim9script()))
+	{
+	    if (opt_type == gov_bool || opt_type == gov_hidden_bool)
+		// bool, possibly hidden
+		n = (long)tv_get_bool(tv);
+	    else
+		// number, possibly hidden
+		n = (long)tv_get_number(tv);
+	}
+
+	if ((opt_p_flags & P_FUNC) && (tv->v_type == VAR_PARTIAL
+						|| tv->v_type == VAR_FUNC))
+	{
+	    // If the option can be set to a function reference or a lambda
+	    // and the passed value is a function reference, then convert it to
+	    // the name (string) of the function reference.
+	    s = tv2string(tv, &tofree, numbuf, 0);
+	}
+	// Avoid setting a string option to the text "v:false" or similar.
+	// In Vim9 script also don't convert a number to string.
+	else if (tv->v_type != VAR_BOOL && tv->v_type != VAR_SPECIAL
+			 && (!in_vim9script() || tv->v_type != VAR_NUMBER))
+	    s = tv_get_string_chk(tv);
+
+	if (op != NULL && *op != '=')
+	{
+	    if (((opt_type == gov_bool || opt_type == gov_number) && *op == '.')
+		    || (opt_type == gov_string && *op != '.'))
+	    {
+		semsg(_(e_letwrong), op);
+		failed = TRUE;  // don't set the value
+
+	    }
+	    else
+	    {
+		// number, in legacy script also bool
+		if (opt_type == gov_number
+			     || (opt_type == gov_bool && !in_vim9script()))
+		{
+		    switch (*op)
+		    {
+			case '+': n = numval + n; break;
+			case '-': n = numval - n; break;
+			case '*': n = numval * n; break;
+			case '/': n = (long)num_divide(numval, n,
+							       &failed); break;
+			case '%': n = (long)num_modulus(numval, n,
+							       &failed); break;
+		    }
+		    s = NULL;
+		}
+		else if (opt_type == gov_string
+					 && stringval != NULL && s != NULL)
+		{
+		    // string
+		    s = concat_str(stringval, s);
+		    vim_free(stringval);
+		    stringval = s;
+		}
+	    }
+	}
+
+	if (!failed)
+	{
+	    if (opt_type != gov_string || s != NULL)
+	    {
+		set_option_value(arg, n, s, scope);
+		arg_end = p;
+	    }
+	    else
+		emsg(_(e_stringreq));
+	}
+	*p = c1;
+	vim_free(stringval);
+	vim_free(tofree);
+    }
+    return arg_end;
+}
+
+/*
+ * Set a register, part of ex_let_one().
+ */
+    static char_u *
+ex_let_register(
+    char_u	*arg,
+    typval_T	*tv,
+    int		flags,
+    char_u	*endchars,
+    char_u	*op)
+{
+    char_u	*arg_end = NULL;
+
+    if ((flags & (ASSIGN_CONST | ASSIGN_FINAL))
+					 && (flags & ASSIGN_FOR_LOOP) == 0)
+    {
+	emsg(_("E996: Cannot lock a register"));
+	return NULL;
+    }
+    ++arg;
+    if (op != NULL && vim_strchr((char_u *)"+-*/%", *op) != NULL)
+	semsg(_(e_letwrong), op);
+    else if (endchars != NULL
+			  && vim_strchr(endchars, *skipwhite(arg + 1)) == NULL)
+	emsg(_(e_unexpected_characters_in_let));
+    else
+    {
+	char_u	*ptofree = NULL;
+	char_u	*p;
+
+	p = tv_get_string_chk(tv);
+	if (p != NULL && op != NULL && *op == '.')
+	{
+	    char_u  *s = get_reg_contents(*arg == '@'
+						  ? '"' : *arg, GREG_EXPR_SRC);
+
+	    if (s != NULL)
+	    {
+		p = ptofree = concat_str(s, p);
+		vim_free(s);
+	    }
+	}
+	if (p != NULL)
+	{
+	    write_reg_contents(*arg == '@' ? '"' : *arg, p, -1, FALSE);
+	    arg_end = arg + 1;
+	}
+	vim_free(ptofree);
+    }
+    return arg_end;
+}
+
+/*
  * Set one item of ":let var = expr" or ":let [v1, v2] = list" to its value.
  * Returns a pointer to the char just after the var name.
  * Returns NULL if there is an error.
@@ -1294,13 +1550,7 @@ ex_let_one(
     char_u	*op,		// "+", "-", "."  or NULL
     int		var_idx)	// variable index for "let [a, b] = list"
 {
-    int		c1;
-    char_u	*name;
-    char_u	*p;
     char_u	*arg_end = NULL;
-    int		len;
-    int		opt_flags;
-    char_u	*tofree = NULL;
 
     if (in_vim9script() && (flags & (ASSIGN_NO_DECL | ASSIGN_DECL)) == 0
 			&& (flags & (ASSIGN_CONST | ASSIGN_FINAL)) == 0
@@ -1310,207 +1560,32 @@ ex_let_one(
 	return NULL;
     }
 
-    // ":let $VAR = expr": Set environment variable.
     if (*arg == '$')
     {
-	if ((flags & (ASSIGN_CONST | ASSIGN_FINAL))
-					     && (flags & ASSIGN_FOR_LOOP) == 0)
-	{
-	    emsg(_("E996: Cannot lock an environment variable"));
-	    return NULL;
-	}
-
-	// Find the end of the name.
-	++arg;
-	name = arg;
-	len = get_env_len(&arg);
-	if (len == 0)
-	    semsg(_(e_invarg2), name - 1);
-	else
-	{
-	    if (op != NULL && vim_strchr((char_u *)"+-*/%", *op) != NULL)
-		semsg(_(e_letwrong), op);
-	    else if (endchars != NULL
-			     && vim_strchr(endchars, *skipwhite(arg)) == NULL)
-		emsg(_(e_unexpected_characters_in_let));
-	    else if (!check_secure())
-	    {
-		c1 = name[len];
-		name[len] = NUL;
-		p = tv_get_string_chk(tv);
-		if (p != NULL && op != NULL && *op == '.')
-		{
-		    int	    mustfree = FALSE;
-		    char_u  *s = vim_getenv(name, &mustfree);
-
-		    if (s != NULL)
-		    {
-			p = tofree = concat_str(s, p);
-			if (mustfree)
-			    vim_free(s);
-		    }
-		}
-		if (p != NULL)
-		{
-		    vim_setenv_ext(name, p);
-		    arg_end = arg;
-		}
-		name[len] = c1;
-		vim_free(tofree);
-	    }
-	}
+	// ":let $VAR = expr": Set environment variable.
+	return ex_let_env(arg, tv, flags, endchars, op);
     }
-
-    // ":let &option = expr": Set option value.
-    // ":let &l:option = expr": Set local option value.
-    // ":let &g:option = expr": Set global option value.
-    // ":for &ts in range(8)": Set option value for for loop
     else if (*arg == '&')
     {
-	if ((flags & (ASSIGN_CONST | ASSIGN_FINAL))
-					     && (flags & ASSIGN_FOR_LOOP) == 0)
-	{
-	    emsg(_(e_const_option));
-	    return NULL;
-	}
-	// Find the end of the name.
-	p = find_option_end(&arg, &opt_flags);
-	if (p == NULL || (endchars != NULL
-			      && vim_strchr(endchars, *skipwhite(p)) == NULL))
-	    emsg(_(e_unexpected_characters_in_let));
-	else
-	{
-	    long	n = 0;
-	    getoption_T	opt_type;
-	    long	numval;
-	    char_u	*stringval = NULL;
-	    char_u	*s = NULL;
-	    int		failed = FALSE;
-
-	    c1 = *p;
-	    *p = NUL;
-
-	    opt_type = get_option_value(arg, &numval, &stringval, opt_flags);
-	    if ((opt_type == gov_bool
-			|| opt_type == gov_number
-			|| opt_type == gov_hidden_bool
-			|| opt_type == gov_hidden_number)
-			     && (tv->v_type != VAR_STRING || !in_vim9script()))
-	    {
-		if (opt_type == gov_bool || opt_type == gov_hidden_bool)
-		    // bool, possibly hidden
-		    n = (long)tv_get_bool(tv);
-		else
-		    // number, possibly hidden
-		    n = (long)tv_get_number(tv);
-	    }
-
-	    // Avoid setting a string option to the text "v:false" or similar.
-	    // In Vim9 script also don't convert a number to string.
-	    if (tv->v_type != VAR_BOOL && tv->v_type != VAR_SPECIAL
-			     && (!in_vim9script() || tv->v_type != VAR_NUMBER))
-		s = tv_get_string_chk(tv);
-
-	    if (op != NULL && *op != '=')
-	    {
-		if (((opt_type == gov_bool || opt_type == gov_number)
-								 && *op == '.')
-			|| (opt_type == gov_string && *op != '.'))
-		{
-		    semsg(_(e_letwrong), op);
-		    failed = TRUE;  // don't set the value
-
-		}
-		else
-		{
-		    // number, in legacy script also bool
-		    if (opt_type == gov_number
-				 || (opt_type == gov_bool && !in_vim9script()))
-		    {
-			switch (*op)
-			{
-			    case '+': n = numval + n; break;
-			    case '-': n = numval - n; break;
-			    case '*': n = numval * n; break;
-			    case '/': n = (long)num_divide(numval, n,
-							       &failed); break;
-			    case '%': n = (long)num_modulus(numval, n,
-							       &failed); break;
-			}
-			s = NULL;
-		    }
-		    else if (opt_type == gov_string
-					     && stringval != NULL && s != NULL)
-		    {
-			// string
-			s = concat_str(stringval, s);
-			vim_free(stringval);
-			stringval = s;
-		    }
-		}
-	    }
-
-	    if (!failed)
-	    {
-		if (opt_type != gov_string || s != NULL)
-		{
-		    set_option_value(arg, n, s, opt_flags);
-		    arg_end = p;
-		}
-		else
-		    emsg(_(e_stringreq));
-	    }
-	    *p = c1;
-	    vim_free(stringval);
-	}
+	// ":let &option = expr": Set option value.
+	// ":let &l:option = expr": Set local option value.
+	// ":let &g:option = expr": Set global option value.
+	// ":for &ts in range(8)": Set option value for for loop
+	return ex_let_option(arg, tv, flags, endchars, op);
     }
-
-    // ":let @r = expr": Set register contents.
     else if (*arg == '@')
     {
-	if ((flags & (ASSIGN_CONST | ASSIGN_FINAL))
-					     && (flags & ASSIGN_FOR_LOOP) == 0)
-	{
-	    emsg(_("E996: Cannot lock a register"));
-	    return NULL;
-	}
-	++arg;
-	if (op != NULL && vim_strchr((char_u *)"+-*/%", *op) != NULL)
-	    semsg(_(e_letwrong), op);
-	else if (endchars != NULL
-			 && vim_strchr(endchars, *skipwhite(arg + 1)) == NULL)
-	    emsg(_(e_unexpected_characters_in_let));
-	else
-	{
-	    char_u	*ptofree = NULL;
-	    char_u	*s;
-
-	    p = tv_get_string_chk(tv);
-	    if (p != NULL && op != NULL && *op == '.')
-	    {
-		s = get_reg_contents(*arg == '@' ? '"' : *arg, GREG_EXPR_SRC);
-		if (s != NULL)
-		{
-		    p = ptofree = concat_str(s, p);
-		    vim_free(s);
-		}
-	    }
-	    if (p != NULL)
-	    {
-		write_reg_contents(*arg == '@' ? '"' : *arg, p, -1, FALSE);
-		arg_end = arg + 1;
-	    }
-	    vim_free(ptofree);
-	}
+	// ":let @r = expr": Set register contents.
+	return ex_let_register(arg, tv, flags, endchars, op);
     }
-
-    // ":let var = expr": Set internal variable.
-    // ":let var: type = expr": Set internal variable with type.
-    // ":let {expr} = expr": Idem, name made with curly braces
     else if (eval_isnamec1(*arg) || *arg == '{')
     {
 	lval_T	lv;
+	char_u	*p;
 
+	// ":let var = expr": Set internal variable.
+	// ":let var: type = expr": Set internal variable with type.
+	// ":let {expr} = expr": Idem, name made with curly braces
 	p = get_lval(arg, tv, &lv, FALSE, FALSE,
 		(flags & (ASSIGN_NO_DECL | ASSIGN_DECL))
 					   ? GLV_NO_DECL : 0, FNE_CHECK_START);
@@ -1518,7 +1593,9 @@ ex_let_one(
 	{
 	    if (endchars != NULL && vim_strchr(endchars,
 					   *skipwhite(lv.ll_name_end)) == NULL)
+	    {
 		emsg(_(e_unexpected_characters_in_let));
+	    }
 	    else
 	    {
 		set_var_lval(&lv, p, tv, copy, flags, op, var_idx);
@@ -1527,7 +1604,6 @@ ex_let_one(
 	}
 	clear_lval(&lv);
     }
-
     else
 	semsg(_(e_invarg2), arg);
 
@@ -1782,7 +1858,7 @@ do_unlet(char_u *name, int forceit)
     }
     if (forceit)
 	return OK;
-    semsg(_("E108: No such variable: \"%s\""), name);
+    semsg(_(e_no_such_variable_str), name);
     return FAIL;
 }
 
@@ -1818,7 +1894,12 @@ do_lock_var(
 	    // Normal name or expanded name.
 	    di = find_var(lp->ll_name, NULL, TRUE);
 	    if (di == NULL)
+	    {
+		if (in_vim9script())
+		    semsg(_(e_cannot_find_variable_to_unlock_str),
+								  lp->ll_name);
 		ret = FAIL;
+	    }
 	    else if ((di->di_flags & DI_FLAGS_FIX)
 			    && di->di_tv.v_type != VAR_DICT
 			    && di->di_tv.v_type != VAR_LIST)
@@ -2065,8 +2146,7 @@ get_user_var_name(expand_T *xp, int idx)
     ht =
 #ifdef FEAT_CMDWIN
 	// In cmdwin, the alternative buffer should be used.
-	(cmdwin_type != 0 && get_cmdline_type() == NUL) ?
-	&prevwin->w_buffer->b_vars->dv_hashtab :
+	is_in_cmdwin() ? &prevwin->w_buffer->b_vars->dv_hashtab :
 #endif
 	&curbuf->b_vars->dv_hashtab;
     if (bdone < ht->ht_used)
@@ -2084,8 +2164,7 @@ get_user_var_name(expand_T *xp, int idx)
     ht =
 #ifdef FEAT_CMDWIN
 	// In cmdwin, the alternative window should be used.
-	(cmdwin_type != 0 && get_cmdline_type() == NUL) ?
-	&prevwin->w_vars->dv_hashtab :
+	is_in_cmdwin() ? &prevwin->w_vars->dv_hashtab :
 #endif
 	&curwin->w_vars->dv_hashtab;
     if (wdone < ht->ht_used)
@@ -2235,7 +2314,7 @@ set_vim_var_tv(int idx, typval_T *tv)
     }
     if (sandbox && (vimvars[idx].vv_flags & VV_RO_SBX))
     {
-	semsg(_(e_readonlysbx), vimvars[idx].vv_name);
+	semsg(_(e_cannot_set_variable_in_sandbox_str), vimvars[idx].vv_name);
 	return FAIL;
     }
     clear_tv(&vimvars[idx].vv_di.di_tv);
@@ -2632,7 +2711,7 @@ eval_variable(
 		type = sv->sv_type;
 	    }
 	}
-	else if (in_vim9script())
+	else if (in_vim9script() && (flags & EVAL_VAR_NO_FUNC) == 0)
 	{
 	    ufunc_T *ufunc = find_func(name, FALSE, NULL);
 
@@ -2644,7 +2723,12 @@ eval_variable(
 		if (rettv != NULL)
 		{
 		    rettv->v_type = VAR_FUNC;
-		    rettv->vval.v_string = vim_strsave(ufunc->uf_name);
+		    if (STRNCMP(name, "g:", 2) == 0)
+			// Keep the "g:", otherwise script-local may be
+			// assumed.
+			rettv->vval.v_string = vim_strsave(name);
+		    else
+			rettv->vval.v_string = vim_strsave(ufunc->uf_name);
 		    if (rettv->vval.v_string != NULL)
 			func_ref(ufunc->uf_name);
 		}
@@ -3194,13 +3278,14 @@ set_var(
     void
 set_var_const(
     char_u	*name,
-    type_T	*type,
+    type_T	*type_arg,
     typval_T	*tv_arg,
     int		copy,	    // make copy of value in "tv"
     int		flags_arg,  // ASSIGN_CONST, ASSIGN_FINAL, etc.
     int		var_idx)    // index for ":let [a, b] = list"
 {
     typval_T	*tv = tv_arg;
+    type_T	*type = type_arg;
     typval_T	bool_tv;
     dictitem_T	*di;
     typval_T	*dest_tv = NULL;
@@ -3210,6 +3295,7 @@ set_var_const(
     int		vim9script = in_vim9script();
     int		var_in_vim9script;
     int		flags = flags_arg;
+    int		free_tv_arg = !copy;  // free tv_arg if not used
 
     ht = find_var_ht(name, &varname);
     if (ht == NULL || *varname == NUL)
@@ -3319,19 +3405,25 @@ set_var_const(
 		    goto failed;
 		}
 
-		if (var_in_vim9script)
+		if (var_in_vim9script && (flags & ASSIGN_FOR_LOOP) == 0)
 		{
 		    where_T where = WHERE_INIT;
+		    svar_T  *sv = find_typval_in_script(&di->di_tv);
 
-		    // check the type and adjust to bool if needed
-		    where.wt_index = var_idx;
-		    where.wt_variable = TRUE;
-		    if (check_script_var_type(&di->di_tv, tv, name, where)
-								       == FAIL)
-			goto failed;
+		    if (sv != NULL)
+		    {
+			// check the type and adjust to bool if needed
+			where.wt_index = var_idx;
+			where.wt_variable = TRUE;
+			if (check_script_var_type(sv, tv, name, where) == FAIL)
+			    goto failed;
+			if (type == NULL)
+			    type = sv->sv_type;
+		    }
 		}
 
-		if (var_check_permission(di, name) == FAIL)
+		if ((flags & ASSIGN_FOR_LOOP) == 0
+				     && var_check_permission(di, name) == FAIL)
 		    goto failed;
 	    }
 	    else
@@ -3423,7 +3515,7 @@ set_var_const(
 
 	    // Make sure the variable name is valid.  In Vim9 script an autoload
 	    // variable must be prefixed with "g:".
-	    if (!valid_varname(varname, !vim9script
+	    if (!valid_varname(varname, -1, !vim9script
 					       || STRNCMP(name, "g:", 2) == 0))
 		goto failed;
 
@@ -3458,6 +3550,7 @@ set_var_const(
 	dest_tv->v_lock = 0;
 	init_tv(tv);
     }
+    free_tv_arg = FALSE;
 
     if (vim9script && type != NULL)
     {
@@ -3486,10 +3579,9 @@ set_var_const(
 	// if the reference count is up to one.  That locks only literal
 	// values.
 	item_lock(dest_tv, DICT_MAXNEST, TRUE, TRUE);
-    return;
 
 failed:
-    if (!copy)
+    if (free_tv_arg)
 	clear_tv(tv_arg);
 }
 
@@ -3518,13 +3610,20 @@ var_check_ro(int flags, char_u *name, int use_gettext)
 {
     if (flags & DI_FLAGS_RO)
     {
-	semsg(_(e_cannot_change_readonly_variable_str),
+	if (name == NULL)
+	    emsg(_(e_cannot_change_readonly_variable));
+	else
+	    semsg(_(e_cannot_change_readonly_variable_str),
 				       use_gettext ? (char_u *)_(name) : name);
 	return TRUE;
     }
     if ((flags & DI_FLAGS_RO_SBX) && sandbox)
     {
-	semsg(_(e_readonlysbx), use_gettext ? (char_u *)_(name) : name);
+	if (name == NULL)
+	    emsg(_(e_cannot_set_variable_in_sandbox));
+	else
+	    semsg(_(e_cannot_set_variable_in_sandbox_str),
+				       use_gettext ? (char_u *)_(name) : name);
 	return TRUE;
     }
     return FALSE;
@@ -3555,7 +3654,10 @@ var_check_fixed(int flags, char_u *name, int use_gettext)
 {
     if (flags & DI_FLAGS_FIX)
     {
-	semsg(_("E795: Cannot delete variable %s"),
+	if (name == NULL)
+	    emsg(_(e_cannot_delete_variable));
+	else
+	    semsg(_(e_cannot_delete_variable_str),
 				      use_gettext ? (char_u *)_(name) : name);
 	return TRUE;
     }
@@ -3604,18 +3706,20 @@ value_check_lock(int lock, char_u *name, int use_gettext)
 {
     if (lock & VAR_LOCKED)
     {
-	semsg(_("E741: Value is locked: %s"),
-				name == NULL ? (char_u *)_("Unknown")
-					     : use_gettext ? (char_u *)_(name)
-					     : name);
+	if (name == NULL)
+	    emsg(_(e_value_is_locked));
+	else
+	    semsg(_(e_value_is_locked_str),
+				       use_gettext ? (char_u *)_(name) : name);
 	return TRUE;
     }
     if (lock & VAR_FIXED)
     {
-	semsg(_("E742: Cannot change value of %s"),
-				name == NULL ? (char_u *)_("Unknown")
-					     : use_gettext ? (char_u *)_(name)
-					     : name);
+	if (name == NULL)
+	    emsg(_(e_cannot_change_value));
+	else
+	    semsg(_(e_cannot_change_value_of_str),
+				       use_gettext ? (char_u *)_(name) : name);
 	return TRUE;
     }
     return FALSE;
@@ -3623,14 +3727,15 @@ value_check_lock(int lock, char_u *name, int use_gettext)
 
 /*
  * Check if a variable name is valid.  When "autoload" is true "#" is allowed.
+ * If "len" is -1 use all of "varname", otherwise up to "varname[len]".
  * Return FALSE and give an error if not.
  */
     int
-valid_varname(char_u *varname, int autoload)
+valid_varname(char_u *varname, int len, int autoload)
 {
     char_u *p;
 
-    for (p = varname; *p != NUL; ++p)
+    for (p = varname; len < 0 ? *p != NUL : p < varname + len; ++p)
 	if (!eval_isnamec1(*p) && (p == varname || !VIM_ISDIGIT(*p))
 					 && !(autoload && *p == AUTOLOAD_CHAR))
 	{

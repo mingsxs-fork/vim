@@ -795,6 +795,7 @@ func Test_pipe_to_buffer_name_nomsg()
 endfunc
 
 func Test_close_output_buffer()
+  let g:test_is_flaky = 1
   enew!
   let test_lines = ['one', 'two']
   call setline(1, test_lines)
@@ -935,6 +936,7 @@ endfunc
 
 func Run_pipe_through_sort(all, use_buffer)
   CheckExecutable sort
+  let g:test_is_flaky = 1
 
   let options = {'out_io': 'buffer', 'out_name': 'sortout'}
   if a:use_buffer
@@ -1206,6 +1208,7 @@ func Test_reuse_channel()
 endfunc
 
 func Test_out_cb()
+  let g:test_is_flaky = 1
   let dict = {'thisis': 'dict: '}
   func dict.outHandler(chan, msg) dict
     if type(a:msg) == v:t_string
@@ -1236,10 +1239,15 @@ func Test_out_cb()
     let g:Ch_outobj = ''
     call ch_sendraw(job, "echosplit [0, {\"one\": 1,| \"tw|o\": 2, \"three\": 3|}]\n")
     " For unknown reasons this can be very slow on Mac.
-    if has('mac')
+    " Increase the timeout on every run.
+    if g:run_nr == 1
+      let timeout = 5000
+    elseif g:run_nr == 2
+      let timeout = 10000
+    elseif g:run_nr == 3
       let timeout = 20000
     else
-      let timeout = 5000
+      let timeout = 40000
     endif
     call WaitForAssert({-> assert_equal({'one': 1, 'two': 2, 'three': 3}, g:Ch_outobj)}, timeout)
   finally
@@ -1333,6 +1341,7 @@ func Test_out_cb_lambda()
 endfunc
 
 func Test_close_and_exit_cb()
+  let g:test_is_flaky = 1
   let g:retdict = {'ret': {}}
   func g:retdict.close_cb(ch) dict
     let self.ret['close_cb'] = a:ch->ch_getjob()->job_status()
@@ -1560,6 +1569,7 @@ endfunction
 
 func Test_exit_callback_interval()
   CheckFunction reltimefloat
+  let g:test_is_flaky = 1
 
   let g:exit_cb_val = {'start': reltime(), 'end': 0, 'process': 0}
   let job = [s:python, '-c', 'import time;time.sleep(0.5)']->job_start({'exit_cb': 'MyExitTimeCb'})
@@ -1742,6 +1752,7 @@ func Test_using_freed_memory()
 endfunc
 
 func Test_collapse_buffers()
+  let g:test_is_flaky = 1
   CheckExecutable cat
 
   sp test_channel.vim
@@ -1884,6 +1895,7 @@ func Test_env()
 endfunc
 
 func Test_cwd()
+  let g:test_is_flaky = 1
   let g:envstr = ''
   if has('win32')
     let expect = $TEMP
@@ -2360,6 +2372,10 @@ func Test_parse_messages_in_autocmd()
   augroup bufenterjob
     autocmd!
   augroup END
+endfunc
+
+func Test_job_start_with_invalid_argument()
+  call assert_fails('call job_start([0zff])', 'E976:')
 endfunc
 
 

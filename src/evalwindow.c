@@ -407,6 +407,7 @@ get_win_info(win_T *wp, short tpnr, short winnr)
 #endif
     dict_add_number(dict, "width", wp->w_width);
     dict_add_number(dict, "wincol", wp->w_wincol + 1);
+    dict_add_number(dict, "textoff", win_col_off(wp));
     dict_add_number(dict, "bufnr", wp->w_buffer->b_fnum);
 
 #ifdef FEAT_TERMINAL
@@ -1249,9 +1250,11 @@ switch_win_noblock(
 	{
 	    curtab->tp_firstwin = firstwin;
 	    curtab->tp_lastwin = lastwin;
+	    curtab->tp_topframe = topframe;
 	    curtab = tp;
 	    firstwin = curtab->tp_firstwin;
 	    lastwin = curtab->tp_lastwin;
+	    topframe = curtab->tp_topframe;
 	}
 	else
 	    goto_tabpage_tp(tp, FALSE, FALSE);
@@ -1293,9 +1296,11 @@ restore_win_noblock(
 	{
 	    curtab->tp_firstwin = firstwin;
 	    curtab->tp_lastwin = lastwin;
+	    curtab->tp_topframe = topframe;
 	    curtab = save_curtab;
 	    firstwin = curtab->tp_firstwin;
 	    lastwin = curtab->tp_lastwin;
+	    topframe = curtab->tp_topframe;
 	}
 	else
 	    goto_tabpage_tp(save_curtab, FALSE, FALSE);
@@ -1311,5 +1316,9 @@ restore_win_noblock(
 	// to the first valid window.
 	win_goto(firstwin);
 # endif
+
+    // If called by win_execute() and executing the command changed the
+    // directory, it now has to be restored.
+    fix_current_dir();
 }
 #endif

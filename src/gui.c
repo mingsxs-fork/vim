@@ -138,7 +138,7 @@ gui_start(char_u *arg UNUSED)
 	// Back to old term settings
 	//
 	// FIXME: If we got here because a child process failed and flagged to
-	// the parent to resume, and X11 is enabled with FEAT_TITLE, this will
+	// the parent to resume, and X11 is enabled, this will
 	// hit an X11 I/O error and do a longjmp(), leaving recursive
 	// permanently set to 1. This is probably not as big a problem as it
 	// sounds, because gui_mch_init() in both gui_x11.c and gui_gtk_x11.c
@@ -146,9 +146,7 @@ gui_start(char_u *arg UNUSED)
 	// actually hit this case.
 	termcapinit(old_term);
 	settmode(TMODE_RAW);		// restart RAW mode
-#ifdef FEAT_TITLE
 	set_title_defaults();		// set 'title' and 'icon' again
-#endif
 #if defined(GUI_MAY_SPAWN) && defined(EXPERIMENTAL_GUI_CMD)
 	if (msg)
 	    emsg(msg);
@@ -460,6 +458,10 @@ gui_init_check(void)
     gui.scrollbar_width = gui.scrollbar_height = SB_DEFAULT_WIDTH;
     gui.prev_wrap = -1;
 
+# ifdef FEAT_GUI_GTK
+    CLEAR_FIELD(gui.ligatures_map);
+#endif
+
 #if defined(ALWAYS_USE_GUI) || defined(VIMDLL)
     result = OK;
 #else
@@ -737,10 +739,9 @@ gui_init(void)
      */
     if (gui_mch_open() != FAIL)
     {
-#ifdef FEAT_TITLE
 	maketitle();
 	resettitle();
-#endif
+
 	init_gui_options();
 #ifdef FEAT_ARABIC
 	// Our GUI can't do bidi.
@@ -1064,6 +1065,61 @@ gui_get_wide_font(void)
 #endif
     return OK;
 }
+
+#if defined(FEAT_GUI_GTK) || defined(PROTO)
+/*
+ * Set list of ascii characters that combined can create ligature.
+ * Store them in char map for quick access from gui_gtk2_draw_string.
+ */
+    void
+gui_set_ligatures(void)
+{
+    char_u	*p;
+
+    if (*p_guiligatures != NUL)
+    {
+	// check for invalid characters
+	for (p = p_guiligatures; *p != NUL; ++p)
+	    if (*p < 32 || *p > 127)
+	    {
+		emsg(_(e_ascii_code_not_in_range));
+		return;
+	    }
+
+	// store valid setting into ligatures_map
+	CLEAR_FIELD(gui.ligatures_map);
+	for (p = p_guiligatures; *p != NUL; ++p)
+	    gui.ligatures_map[*p] = 1;
+    }
+    else
+	CLEAR_FIELD(gui.ligatures_map);
+}
+
+/*
+ * Adjust the columns to undraw for when the cursor is on ligatures.
+ */
+    static void
+gui_adjust_undraw_cursor_for_ligatures(int *startcol, int *endcol)
+{
+    int off;
+
+    if (ScreenLines == NULL || *p_guiligatures == NUL)
+	return;
+
+    // expand before the cursor for all the chars in gui.ligatures_map
+    off = LineOffset[gui.cursor_row] + *startcol;
+    if (gui.ligatures_map[ScreenLines[off]])
+	while (*startcol > 0 && gui.ligatures_map[ScreenLines[--off]])
+	    (*startcol)--;
+
+    // expand after the cursor for all the chars in gui.ligatures_map
+    off = LineOffset[gui.cursor_row] + *endcol;
+    if (gui.ligatures_map[ScreenLines[off]])
+	while (*endcol < ((int)screen_Columns - 1)
+				      && gui.ligatures_map[ScreenLines[++off]])
+	   (*endcol)++;
+}
+#endif
 
     static void
 gui_set_cursor(int row, int col)
@@ -2639,19 +2695,24 @@ gui_outstr_nowrap(
 }
 
 /*
- * Un-draw the cursor.	Actually this just redraws the character at the given
- * position.
+ * Undraw the cursor.  This actually redraws the character at the cursor
+ * position, plus some more characters when needed.
  */
     void
 gui_undraw_cursor(void)
 {
     if (gui.cursor_is_valid)
     {
-	// Redraw the character just before too, if there is one, because with
-	// some fonts and characters there can be a one pixel overlap.
-	gui_redraw_block(gui.cursor_row,
-		      gui.cursor_col > 0 ? gui.cursor_col - 1 : gui.cursor_col,
-		      gui.cursor_row, gui.cursor_col, GUI_MON_NOCLEAR);
+	// Always redraw the character just before if there is one, because
+	// with some fonts and characters there can be a one pixel overlap.
+	int startcol = gui.cursor_col > 0 ? gui.cursor_col - 1 : gui.cursor_col;
+	int endcol = gui.cursor_col;
+
+#ifdef FEAT_GUI_GTK
+	gui_adjust_undraw_cursor_for_ligatures(&startcol, &endcol);
+#endif
+	gui_redraw_block(gui.cursor_row, startcol,
+				      gui.cursor_row, endcol, GUI_MON_NOCLEAR);
 
 	// Cursor_is_valid is reset when the cursor is undrawn, also reset it
 	// here in case it wasn't needed to undraw it.
@@ -4348,6 +4409,10 @@ gui_update_scrollbars(
 					    val, size, max);
 	}
     }
+
+    // update the title, it may show the scroll position
+    maketitle();
+
     prev_curwin = curwin;
     --hold_gui_events;
 }
@@ -4751,7 +4816,7 @@ gui_get_color(char_u *name)
 	    && gui.in_use
 #endif
 	    )
-	semsg(_(e_alloc_color), name);
+	semsg(_(e_cannot_allocate_color_str), name);
     return t;
 }
 
@@ -5461,6 +5526,7 @@ gui_wingoto_xy(int x, int y)
 drop_callback(void *cookie)
 {
     char_u	*p = cookie;
+    int		do_shorten = FALSE;
 
     // If Shift held down, change to first file's directory.  If the first
     // item is a directory, change to that directory (and let the explorer
@@ -5470,11 +5536,16 @@ drop_callback(void *cookie)
 	if (mch_isdir(p))
 	{
 	    if (mch_chdir((char *)p) == 0)
-		shorten_fnames(TRUE);
+		do_shorten = TRUE;
 	}
 	else if (vim_chdirfile(p, "drop") == OK)
-	    shorten_fnames(TRUE);
+	    do_shorten = TRUE;
 	vim_free(p);
+	if (do_shorten)
+	{
+	    shorten_fnames(TRUE);
+	    last_chdir_reason = "drop";
+	}
     }
 
     // Update the screen display
@@ -5482,9 +5553,7 @@ drop_callback(void *cookie)
 # ifdef FEAT_MENU
     gui_update_menus(0);
 # endif
-#ifdef FEAT_TITLE
     maketitle();
-#endif
     setcursor();
     out_flush_cursor(FALSE, FALSE);
 }
@@ -5571,7 +5640,7 @@ gui_handle_drop(
 	}
 	else
 	    handle_drop(count, fnames, (modifiers & MOUSE_CTRL) != 0,
-		    drop_callback, (void *)p);
+						     drop_callback, (void *)p);
     }
 
     entered = FALSE;

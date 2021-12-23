@@ -8,12 +8,8 @@
  */
 
 /*
- * getchar.c
- *
- * functions related with getting a character from the user/mapping/redo/...
- *
- * manipulations with redo buffer and stuff buffer
- * mappings and abbreviations
+ * getchar.c: Code related to getting a character from the user or a script
+ * file, manipulations with redo buffer and stuff buffer.
  */
 
 #include "vim.h"
@@ -243,7 +239,6 @@ add_buff(
 	buf->bh_curr->b_next = p;
 	buf->bh_curr = p;
     }
-    return;
 }
 
 /*
@@ -1002,6 +997,8 @@ ins_typebuf(
     }
     else
     {
+	int extra;
+
 	/*
 	 * Need to allocate a new buffer.
 	 * In typebuf.tb_buf there must always be room for 3 * (MAXMAPLEN + 4)
@@ -1009,13 +1006,15 @@ ins_typebuf(
 	 * often.
 	 */
 	newoff = MAXMAPLEN + 4;
-	newlen = typebuf.tb_len + addlen + newoff + 4 * (MAXMAPLEN + 4);
-	if (newlen < 0)		    // string is getting too long
+	extra = addlen + newoff + 4 * (MAXMAPLEN + 4);
+	if (typebuf.tb_len > 2147483647 - extra)
 	{
-	    emsg(_(e_toocompl));    // also calls flush_buffers
+	    // string is getting too long for a 32 bit int
+	    emsg(_(e_command_too_complex));    // also calls flush_buffers
 	    setcursor();
 	    return FAIL;
 	}
+	newlen = typebuf.tb_len + extra;
 	s1 = alloc(newlen);
 	if (s1 == NULL)		    // out of memory
 	    return FAIL;
@@ -1853,7 +1852,7 @@ vgetc(void)
 			// or a K_SPECIAL - KS_EXTRA - KE_CSI, which is CSI
 			// too.
 			c = vgetorpeek(TRUE);
-			if (vgetorpeek(TRUE) == (int)KE_CSI && c == KS_EXTRA)
+			if (vgetorpeek(TRUE) == KE_CSI && c == KS_EXTRA)
 			    buf[i] = CSI;
 		    }
 		}
@@ -2182,7 +2181,7 @@ f_getcharmod(typval_T *argvars UNUSED, typval_T *rettv)
 /*
  * Process messages that have been queued for netbeans or clientserver.
  * Also check if any jobs have ended.
- * These functions can call arbitrary vimscript and should only be called when
+ * These functions can call arbitrary Vim script and should only be called when
  * it is safe to do so.
  */
     void
@@ -2521,7 +2520,7 @@ handle_mapping(
 		    if (*s == RM_SCRIPT
 			    && (mp->m_keys[0] != K_SPECIAL
 				|| mp->m_keys[1] != KS_EXTRA
-				|| mp->m_keys[2] != (int)KE_SNR))
+				|| mp->m_keys[2] != KE_SNR))
 			continue;
 
 		    // If one of the typed keys cannot be remapped, skip the
@@ -2630,7 +2629,7 @@ handle_mapping(
 		keylen = KEYLEN_PART_KEY;
 
 	    // If no termcode matched, try to include the modifier into the
-	    // key.  This for when modifyOtherKeys is working.
+	    // key.  This is for when modifyOtherKeys is working.
 	    if (keylen == 0 && !no_reduce_keys)
 		keylen = check_simplify_modifier(max_mlen + 1);
 
@@ -2678,7 +2677,7 @@ handle_mapping(
 		if (mp == NULL)
 		{
 		    *keylenp = keylen;
-		    return map_result_get;    // got character, break for loop
+		    return map_result_get;    // get character from typeahead
 		}
 	}
 
@@ -3061,7 +3060,7 @@ vgetorpeek(int advance)
 						      typebuf.tb_off];
 			    del_typebuf(1, 0);
 			}
-			break;
+			break;  // got character, break the for loop
 		    }
 
 		    // not enough characters, get more
@@ -3139,7 +3138,7 @@ vgetorpeek(int advance)
 				    if (!VIM_ISWHITE(ptr[col]))
 					curwin->w_wcol = vcol;
 				    vcol += lbr_chartabsize(ptr, ptr + col,
-							       (colnr_T)vcol);
+							       vcol);
 				    if (has_mbyte)
 					col += (*mb_ptr2len)(ptr + col);
 				    else

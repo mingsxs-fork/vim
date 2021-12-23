@@ -1669,9 +1669,7 @@ nb_do_cmd(
 	    buf->bufp = curbuf;
 	    buf->initDone = TRUE;
 	    do_update = 1;
-#if defined(FEAT_TITLE)
 	    maketitle();
-#endif
 #if defined(FEAT_MENU) && defined(FEAT_GUI)
 	    if (gui.in_use)
 		gui_update_menus(0);
@@ -1748,9 +1746,7 @@ nb_do_cmd(
 	    {
 		check_status(buf->bufp);
 		redraw_tabline = TRUE;
-#ifdef FEAT_TITLE
 		maketitle();
-#endif
 		update_screen(0);
 	    }
 // =====================================================================
@@ -1760,7 +1756,10 @@ nb_do_cmd(
 	    if (buf == NULL || buf->bufp == NULL)
 		nbdebug(("    invalid buffer identifier in setModtime\n"));
 	    else
+	    {
 		buf->bufp->b_mtime = atoi((char *)args);
+		buf->bufp->b_mtime_ns = 0;
+	    }
 // =====================================================================
 	}
 	else if (streq((char *)cmd, "setReadOnly"))
@@ -2653,7 +2652,10 @@ netbeans_file_opened(buf_T *bufp)
 
     nb_send(buffer, "netbeans_file_opened");
     if (p_acd && vim_chdirfile(bufp->b_ffname, "auto") == OK)
+    {
+	last_chdir_reason = "netbeans";
 	shorten_fnames(TRUE);
+    }
 }
 
 /*

@@ -612,7 +612,8 @@ may_adjust_incsearch_highlighting(
     // NOTE: must call restore_last_search_pattern() before returning!
     save_last_search_pattern();
 
-    if (!do_incsearch_highlighting(firstc, &search_delim, is_state, &skiplen, &patlen))
+    if (!do_incsearch_highlighting(firstc, &search_delim, is_state,
+							    &skiplen, &patlen))
     {
 	restore_last_search_pattern();
 	return OK;
@@ -626,6 +627,11 @@ may_adjust_incsearch_highlighting(
     if (search_delim == ccline.cmdbuff[skiplen])
     {
 	pat = last_search_pattern();
+	if (pat == NULL)
+	{
+	    restore_last_search_pattern();
+	    return FAIL;
+	}
 	skiplen = 0;
 	patlen = (int)STRLEN(pat);
     }
@@ -3724,6 +3730,10 @@ redrawcmdline(void)
     redrawcmdline_ex(TRUE);
 }
 
+/*
+ * When "do_compute_cmdrow" is TRUE the command line is redrawn at the bottom.
+ * If FALSE cmdline_row is used, which should redraw in the same place.
+ */
     void
 redrawcmdline_ex(int do_compute_cmdrow)
 {
@@ -3888,27 +3898,32 @@ ccheck_abbr(int c)
 }
 
 /*
- * Escape special characters in "fname" for when used as a file name argument
- * after a Vim command, or, when "shell" is non-zero, a shell command.
+ * Escape special characters in "fname", depending on "what":
+ * VSE_NONE: for when used as a file name argument after a Vim command.
+ * VSE_SHELL: for a shell command.
+ * VSE_BUFFER: for the ":buffer" command.
  * Returns the result in allocated memory.
  */
     char_u *
-vim_strsave_fnameescape(char_u *fname, int shell UNUSED)
+vim_strsave_fnameescape(char_u *fname, int what)
 {
     char_u	*p;
 #ifdef BACKSLASH_IN_FILENAME
     char_u	buf[20];
     int		j = 0;
 
-    // Don't escape '[', '{' and '!' if they are in 'isfname'.
-    for (p = PATH_ESC_CHARS; *p != NUL; ++p)
+    // Don't escape '[', '{' and '!' if they are in 'isfname' and for the
+    // ":buffer" command.
+    for (p = what == VSE_BUFFER ? BUFFER_ESC_CHARS : PATH_ESC_CHARS;
+								*p != NUL; ++p)
 	if ((*p != '[' && *p != '{' && *p != '!') || !vim_isfilec(*p))
 	    buf[j++] = *p;
     buf[j] = NUL;
     p = vim_strsave_escaped(fname, buf);
 #else
-    p = vim_strsave_escaped(fname, shell ? SHELL_ESC_CHARS : PATH_ESC_CHARS);
-    if (shell && csh_like_shell() && p != NULL)
+    p = vim_strsave_escaped(fname, what == VSE_SHELL ? SHELL_ESC_CHARS
+		    : what == VSE_BUFFER ? BUFFER_ESC_CHARS : PATH_ESC_CHARS);
+    if (what == VSE_SHELL && csh_like_shell() && p != NULL)
     {
 	char_u	    *s;
 
@@ -4473,6 +4488,15 @@ open_cmdwin(void)
     setmouse();
 
     return cmdwin_result;
+}
+
+/*
+ * Return TRUE if in the cmdwin, not editing the command line.
+ */
+    int
+is_in_cmdwin(void)
+{
+    return cmdwin_type != 0 && get_cmdline_type() == NUL;
 }
 #endif // FEAT_CMDWIN
 

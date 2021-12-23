@@ -496,8 +496,9 @@ def Test_try_catch_throw()
   endtry
   assert_equal(266, n)
 
+  l = [1, 2, 3] 
   try
-    [n] = [1, 2, 3]
+    [n] = l
   catch /E1093:/
     n = 277
   endtry
@@ -610,15 +611,49 @@ def Test_try_catch_throw()
   # no requirement for spaces before |
   try|echo 0|catch|endtry
 
+  # return in try with finally
+  def ReturnInTry(): number
+    var ret = 4
+    try
+      return ret
+    catch /this/
+      return -1
+    catch /that/
+      return -1
+    finally
+      # changing ret has no effect
+      ret = 7
+    endtry
+    return -2
+  enddef
+  assert_equal(4, ReturnInTry())
+
+  # return in catch with finally
+  def ReturnInCatch(): number
+    var ret = 5
+    try
+      throw 'getout'
+      return -1
+    catch /getout/
+      # ret is evaluated here
+      return ret
+    finally
+      # changing ret later has no effect
+      ret = -3
+    endtry
+    return -2
+  enddef
+  assert_equal(5, ReturnInCatch())
+
   # return in finally after empty catch
   def ReturnInFinally(): number
     try
     finally
-      return 4
+      return 6
     endtry
-    return 2
+    return -1
   enddef
-  assert_equal(4, ReturnInFinally())
+  assert_equal(6, ReturnInFinally())
 
   var lines =<< trim END
       vim9script
@@ -1477,13 +1512,40 @@ def Test_vim9_import_export()
   delete('Xvim9_script')
 enddef
 
+def Test_import_funcref()
+  var lines =<< trim END
+      vim9script
+      export def F(): number
+        return 42
+      enddef
+      export const G = F
+  END
+  writefile(lines, 'Xlib.vim')
+
+  lines =<< trim END
+      vim9script
+      import {G} from './Xlib.vim'
+      const Foo = G()
+      assert_equal(42, Foo)
+
+      def DoTest()
+        const Goo = G()
+        assert_equal(42, Goo)
+      enddef
+      DoTest()
+  END
+  CheckScriptSuccess(lines)
+
+  delete('Xlib.vim')
+enddef
+
 def Test_import_star_fails()
   writefile([], 'Xfoo.vim')
   var lines =<< trim END
       import * as foo from './Xfoo.vim'
       foo = 'bar'
   END
-  CheckDefAndScriptFailure2(lines, 'E1094:', 'E1236: Cannot use foo itself')
+  CheckDefAndScriptFailure(lines, ['E1094:', 'E1236: Cannot use foo itself'])
   lines =<< trim END
       vim9script
       import * as foo from './Xfoo.vim'
@@ -1508,6 +1570,21 @@ def Test_import_star_fails()
   CheckScriptFailure(lines, 'E1047:')
 
   delete('Xfoo.vim')
+
+  lines =<< trim END
+      vim9script
+      def TheFunc()
+        echo 'the func'
+      enddef
+      export var Ref = TheFunc
+  END
+  writefile([], 'Xthat.vim')
+  lines =<< trim END
+      import * as That from './Xthat.vim'
+      That()
+  END
+  CheckDefAndScriptFailure(lines, ['E1094:', 'E1236: Cannot use That itself'])
+  delete('Xthat.vim')
 enddef
 
 def Test_import_as()
@@ -1868,6 +1945,17 @@ def Test_script_var_shadows_function()
   CheckScriptFailure(lines, 'E1041:', 5)
 enddef
 
+def Test_function_shadows_script_var()
+  var lines =<< trim END
+      vim9script
+      var Func = 1
+      def Func(): number
+        return 123
+      enddef
+  END
+  CheckScriptFailure(lines, 'E1041:', 3)
+enddef
+
 def Test_script_var_shadows_command()
   var lines =<< trim END
       var undo = 1
@@ -1881,6 +1969,15 @@ def Test_script_var_shadows_command()
       undo
   END
   CheckDefAndScriptFailure(lines, 'E1207:', 2)
+enddef
+
+def Test_vim9script_call_wrong_type()
+  var lines =<< trim END
+      vim9script
+      var Time = 'localtime'
+      Time()
+  END
+  CheckScriptFailure(lines, 'E1085:')
 enddef
 
 def s:RetSome(): string
@@ -2122,7 +2219,7 @@ def Test_import_compile_error()
   try
     source Ximport.vim
   catch /E1001/
-    # Error should be fore the Xexported.vim file.
+    # Error should be before the Xexported.vim file.
     assert_match('E1001: Variable not found: notDefined', v:exception)
     assert_match('function <SNR>\d\+_ImpFunc\[1\]..<SNR>\d\+_ExpFunc, line 1', v:throwpoint)
   endtry
@@ -2170,7 +2267,7 @@ def Test_func_overrules_import_fails()
       echo 'local to function'
     enddef
   END
-  CheckScriptFailure(lines, 'E1073:')
+  CheckScriptFailure(lines, 'E1041:')
 
   lines =<< trim END
     vim9script
@@ -2203,7 +2300,7 @@ def Test_func_redefine_fails()
     vim9script
     def Foo(): string
       return 'foo'
-      enddef
+    enddef
     def Func()
       var  Foo = {-> 'lambda'}
     enddef
@@ -2789,12 +2886,12 @@ def Test_for_loop_with_closure()
 enddef
 
 def Test_for_loop_fails()
-  CheckDefAndScriptFailure2(['for '], 'E1097:', 'E690:')
-  CheckDefAndScriptFailure2(['for x'], 'E1097:', 'E690:')
-  CheckDefAndScriptFailure2(['for x in'], 'E1097:', 'E15:')
+  CheckDefAndScriptFailure(['for '], ['E1097:', 'E690:'])
+  CheckDefAndScriptFailure(['for x'], ['E1097:', 'E690:'])
+  CheckDefAndScriptFailure(['for x in'], ['E1097:', 'E15:'])
   CheckDefAndScriptFailure(['for # in range(5)'], 'E690:')
   CheckDefAndScriptFailure(['for i In range(5)'], 'E690:')
-  CheckDefAndScriptFailure2(['var x = 5', 'for x in range(5)', 'endfor'], 'E1017:', 'E1041:')
+  CheckDefAndScriptFailure(['var x = 5', 'for x in range(5)', 'endfor'], ['E1017:', 'E1041:'])
   CheckScriptFailure(['vim9script', 'var x = 5', 'for x in range(5)', '# comment', 'endfor'], 'E1041:', 3)
   CheckScriptFailure(['def Func(arg: any)', 'for arg in range(5)', 'enddef', 'defcompile'], 'E1006:')
   delfunc! g:Func
@@ -2816,7 +2913,7 @@ def Test_for_loop_fails()
         e = {a: 0, b: ''}
       endfor
   END
-  CheckDefAndScriptFailure2(lines, 'E1018:', 'E46:', 3)
+  CheckDefAndScriptFailure(lines, ['E1018:', 'E46:'], 3)
 
   lines =<< trim END
       for nr: number in ['foo']
@@ -2838,11 +2935,35 @@ def Test_for_loop_fails()
       endfor
   END
   CheckDefExecAndScriptFailure(lines, 'E1012: Type mismatch; expected job but got string', 2)
+
+  lines =<< trim END
+      var i = 0
+      for i in [1, 2, 3]
+        echo i
+      endfor
+  END
+  CheckDefExecAndScriptFailure(lines, ['E1017:', 'E1041:'])
+
+  lines =<< trim END
+      var l = [0]
+      for l[0] in [1, 2, 3]
+        echo l[0]
+      endfor
+  END
+  CheckDefExecAndScriptFailure(lines, ['E461:', 'E1017:'])
+
+  lines =<< trim END
+      var d = {x: 0}
+      for d.x in [1, 2, 3]
+        echo d.x
+      endfor
+  END
+  CheckDefExecAndScriptFailure(lines, ['E461:', 'E1017:'])
 enddef
 
 def Test_for_loop_script_var()
   # cannot use s:var in a :def function
-  CheckDefFailure(['for s:var in range(3)', 'echo 3'], 'E1101:')
+  CheckDefFailure(['for s:var in range(3)', 'echo 3'], 'E1254:')
 
   # can use s:var in Vim9 script, with or without s:
   var lines =<< trim END
@@ -3054,6 +3175,21 @@ def Test_while_loop()
   var s = ''
   while s == 'x' # {comment}
   endwhile
+enddef
+
+def Test_while_loop_in_script()
+  var lines =<< trim END
+      vim9script
+      var result = ''
+      var cnt = 0
+      while cnt < 3
+        var s = 'v' .. cnt
+        result ..= s
+        cnt += 1
+      endwhile
+      assert_equal('v0v1v2', result)
+  END
+  CheckScriptSuccess(lines)
 enddef
 
 def Test_while_loop_fails()
@@ -3921,6 +4057,41 @@ def Test_vim9_autoload()
   &rtp = save_rtp
 enddef
 
+" test disassembling an auto-loaded function starting with "debug"
+def Test_vim9_autoload_disass()
+  mkdir('Xdir/autoload', 'p')
+  var save_rtp = &rtp
+  exe 'set rtp^=' .. getcwd() .. '/Xdir'
+
+  var lines =<< trim END
+     vim9script
+     def debugit#test(): string
+       return 'debug'
+     enddef
+  END
+  writefile(lines, 'Xdir/autoload/debugit.vim')
+
+  lines =<< trim END
+     vim9script
+     def profileit#test(): string
+       return 'profile'
+     enddef
+  END
+  writefile(lines, 'Xdir/autoload/profileit.vim')
+
+  lines =<< trim END
+    vim9script
+    assert_equal('debug', debugit#test())
+    disass debugit#test
+    assert_equal('profile', profileit#test())
+    disass profileit#test
+  END
+  CheckScriptSuccess(lines)
+
+  delete('Xdir', 'rf')
+  &rtp = save_rtp
+enddef
+
 " test using a vim9script that is auto-loaded from an autocmd
 def Test_vim9_aucmd_autoload()
   var lines =<< trim END
@@ -4261,7 +4432,8 @@ def Test_catch_exception_in_callback()
         var x: string
         var y: string
         # this error should be caught with CHECKLEN
-        [x, y] = ['']
+        var sl = ['']
+        [x, y] = sl
       catch
         g:caught = 'yes'
       endtry
@@ -4277,6 +4449,10 @@ enddef
 def Test_no_unknown_error_after_error()
   if !has('unix') || !has('job')
     throw 'Skipped: not unix of missing +job feature'
+  endif
+  # FIXME: this check should not be needed
+  if has('win32')
+    throw 'Skipped: does not work on MS-Windows'
   endif
   var lines =<< trim END
       vim9script
@@ -4527,6 +4703,34 @@ def Test_xxx_echoerr_line_number()
   CheckDefExecAndScriptFailure(lines, 'some error continued', 1)
 enddef
 
+func Test_debug_with_lambda()
+  CheckRunVimInTerminal
+
+  " call indirectly to avoid compilation error for missing functions
+  call Run_Test_debug_with_lambda()
+endfunc
+
+def Run_Test_debug_with_lambda()
+  var lines =<< trim END
+      vim9script
+      def Func()
+        var n = 0
+        echo [0]->filter((_, v) => v == n)
+      enddef
+      breakadd func Func
+      Func()
+  END
+  writefile(lines, 'XdebugFunc')
+  var buf = RunVimInTerminal('-S XdebugFunc', {rows: 6, wait_for_ruler: 0})
+  WaitForAssert(() => assert_match('^>', term_getline(buf, 6)))
+
+  term_sendkeys(buf, "cont\<CR>")
+  WaitForAssert(() => assert_match('\[0\]', term_getline(buf, 5)))
+
+  StopVimInTerminal(buf)
+  delete('XdebugFunc')
+enddef
+
 def ProfiledWithLambda()
   var n = 3
   echo [[1, 2], [3, 4]]->filter((_, l) => l[0] == n)
@@ -4548,7 +4752,7 @@ def ProfiledNestedProfiled()
   Nested()
 enddef
 
-" Execute this near the end, profiling doesn't stop until Vim exists.
+" Execute this near the end, profiling doesn't stop until Vim exits.
 " This only tests that it works, not the profiling output.
 def Test_xx_profile_with_lambda()
   CheckFeature profile

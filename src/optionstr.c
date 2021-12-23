@@ -271,6 +271,7 @@ check_buf_options(buf_T *buf)
 #ifdef FEAT_COMPL_FUNC
     check_string_option(&buf->b_p_cfu);
     check_string_option(&buf->b_p_ofu);
+    check_string_option(&buf->b_p_tsrfu);
 #endif
 #ifdef FEAT_EVAL
     check_string_option(&buf->b_p_tfu);
@@ -870,7 +871,7 @@ did_set_string_option(
 	if (check_opt_strings(p_ambw, p_ambw_values, FALSE) != OK)
 	    errmsg = e_invarg;
 	else if (set_chars_option(curwin, &p_fcs) != NULL)
-	    errmsg = _("E835: Conflicts with value of 'fillchars'");
+	    errmsg = _(e_conflicts_with_value_of_fillchars);
 	else
 	{
 	    tabpage_T	*tp;
@@ -880,7 +881,7 @@ did_set_string_option(
 	    {
 		if (set_chars_option(wp, &wp->w_p_lcs) != NULL)
 		{
-		    errmsg = _("E834: Conflicts with value of 'listchars'");
+		    errmsg = _(e_conflicts_with_value_of_listchars);
 		    goto ambw_end;
 		}
 	    }
@@ -978,10 +979,8 @@ ambw_end:
 		errmsg = e_invarg;
 	    else
 	    {
-#ifdef FEAT_TITLE
 		// May show a "+" in the title now.
 		redraw_titles();
-#endif
 		// Add 'fileencoding' to the swap file.
 		ml_setflags(curbuf);
 	    }
@@ -998,9 +997,7 @@ ambw_end:
 	    if (varp == &p_enc)
 	    {
 		errmsg = mb_init();
-#ifdef FEAT_TITLE
 		redraw_titles();
-#endif
 	    }
 	}
 
@@ -1140,9 +1137,7 @@ ambw_end:
 		curbuf->b_p_tx = TRUE;
 	    else
 		curbuf->b_p_tx = FALSE;
-#ifdef FEAT_TITLE
 	    redraw_titles();
-#endif
 	    // update flag in swap file
 	    ml_setflags(curbuf);
 	    // Redraw needed when switching to/from "mac": a CR in the text
@@ -1330,11 +1325,10 @@ ambw_end:
 	    if (!(opt_flags & OPT_GLOBAL))
 		clear_string_option(&curwin->w_p_lcs);
 	    FOR_ALL_TAB_WINDOWS(tp, wp)
-	    {
-		errmsg = set_chars_option(wp, &wp->w_p_lcs);
-		if (errmsg)
-		    break;
-	    }
+		// If no error was returned above, we don't expect an error
+		// here, so ignore the return value.
+		(void)set_chars_option(wp, &wp->w_p_lcs);
+
 	    redraw_all_later(NOT_VALID);
 	}
     }
@@ -1559,6 +1553,13 @@ ambw_end:
 	redraw_gui_only = TRUE;
     }
 #endif
+# if defined(FEAT_GUI_GTK)
+    else if (varp == &p_guiligatures)
+    {
+	gui_set_ligatures();
+	redraw_gui_only = TRUE;
+    }
+# endif
 
 #ifdef CURSOR_SHAPE
     // 'guicursor'
@@ -1596,11 +1597,10 @@ ambw_end:
 	fill_breakat_flags();
 #endif
 
-#ifdef FEAT_TITLE
     // 'titlestring' and 'iconstring'
     else if (varp == &p_titlestring || varp == &p_iconstring)
     {
-# ifdef FEAT_STL_OPT
+#ifdef FEAT_STL_OPT
 	int	flagval = (varp == &p_titlestring) ? STL_IN_TITLE : STL_IN_ICON;
 
 	// NULL => statusline syntax
@@ -1608,10 +1608,9 @@ ambw_end:
 	    stl_syntax |= flagval;
 	else
 	    stl_syntax &= ~flagval;
-# endif
+#endif
 	did_set_title();
     }
-#endif
 
 #ifdef FEAT_GUI
     // 'guioptions'
@@ -1798,9 +1797,7 @@ ambw_end:
 		redraw_later(VALID);
 	    }
 	    curbuf->b_help = (curbuf->b_p_bt[0] == 'h');
-#ifdef FEAT_TITLE
 	    redraw_titles();
-#endif
 	}
     }
 
@@ -2222,10 +2219,7 @@ ambw_end:
     }
     // 'wincolor'
     else if (varp == &curwin->w_p_wcr)
-    {
-	if (curwin->w_buffer->b_term != NULL)
-	    term_update_colors(curwin->w_buffer->b_term);
-    }
+	term_update_wincolor(curwin);
 # if defined(MSWIN)
     // 'termwintype'
     else if (varp == &p_twt)
@@ -2337,10 +2331,67 @@ ambw_end:
 # endif
 #endif
 
+#ifdef FEAT_COMPL_FUNC
+    // 'completefunc'
+    else if (gvarp == &p_cfu)
+    {
+	if (set_completefunc_option() == FAIL)
+	    errmsg = e_invarg;
+    }
+
+    // 'omnifunc'
+    else if (gvarp == &p_ofu)
+    {
+	if (set_omnifunc_option() == FAIL)
+	    errmsg = e_invarg;
+    }
+
+    // 'thesaurusfunc'
+    else if (gvarp == &p_tsrfu)
+    {
+	if (set_thesaurusfunc_option() == FAIL)
+	    errmsg = e_invarg;
+    }
+#endif
+
+#if defined(FEAT_EVAL) && \
+     (defined(FEAT_XIM) || defined(IME_WITHOUT_XIM) || defined(VIMDLL))
+    // 'imactivatefunc'
+    else if (gvarp == &p_imaf)
+    {
+	if (set_imactivatefunc_option() == FAIL)
+	    errmsg = e_invarg;
+    }
+
+    // 'imstatusfunc'
+    else if (gvarp == &p_imsf)
+    {
+	if (set_imstatusfunc_option() == FAIL)
+	    errmsg = e_invarg;
+    }
+#endif
+
+    // 'operatorfunc'
+    else if (varp == &p_opfunc)
+    {
+	if (set_operatorfunc_option() == FAIL)
+	    errmsg = e_invarg;
+    }
+
 #ifdef FEAT_QUICKFIX
+    // 'quickfixtextfunc'
     else if (varp == &p_qftf)
     {
-	if (qf_process_qftf_option() == FALSE)
+	if (qf_process_qftf_option() == FAIL)
+	    errmsg = e_invarg;
+    }
+#endif
+
+#ifdef FEAT_EVAL
+    // 'tagfunc'
+    else if (gvarp == &p_tfu)
+    {
+	if (set_tagfunc_option() == FAIL)
 	    errmsg = e_invarg;
     }
 #endif

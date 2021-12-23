@@ -103,10 +103,75 @@ static taggy_T ptag_entry = {NULL, {{0, 0, 0}, 0}, 0, 0, NULL};
 
 #ifdef FEAT_EVAL
 static int  tfu_in_use = FALSE;	    // disallow recursive call of tagfunc
+static callback_T tfu_cb;	    // 'tagfunc' callback function
 #endif
 
 // Used instead of NUL to separate tag fields in the growarrays.
 #define TAG_SEP 0x02
+
+/*
+ * Reads the 'tagfunc' option value and convert that to a callback value.
+ * Invoked when the 'tagfunc' option is set. The option value can be a name of
+ * a function (string), or function(<name>) or funcref(<name>) or a lambda.
+ */
+    int
+set_tagfunc_option(void)
+{
+#ifdef FEAT_EVAL
+    free_callback(&tfu_cb);
+    free_callback(&curbuf->b_tfu_cb);
+
+    if (*curbuf->b_p_tfu == NUL)
+	return OK;
+
+    if (option_set_callback_func(curbuf->b_p_tfu, &tfu_cb) == FAIL)
+	return FAIL;
+
+    copy_callback(&curbuf->b_tfu_cb, &tfu_cb);
+#endif
+
+    return OK;
+}
+
+#if defined(EXITFREE) || defined(PROTO)
+    void
+free_tagfunc_option(void)
+{
+# ifdef FEAT_EVAL
+    free_callback(&tfu_cb);
+# endif
+}
+#endif
+
+/*
+ * Mark the global 'tagfunc' callback with 'copyID' so that it is not garbage
+ * collected.
+ */
+    int
+set_ref_in_tagfunc(int copyID UNUSED)
+{
+    int	abort = FALSE;
+
+#ifdef FEAT_EVAL
+    abort = set_ref_in_callback(&tfu_cb, copyID);
+#endif
+
+    return abort;
+}
+
+/*
+ * Copy the global 'tagfunc' callback function to the buffer-local 'tagfunc'
+ * callback for 'buf'.
+ */
+    void
+set_buflocal_tfu_callback(buf_T *buf UNUSED)
+{
+#ifdef FEAT_EVAL
+    free_callback(&buf->b_tfu_cb);
+    if (tfu_cb.cb_name != NULL && *tfu_cb.cb_name != NUL)
+	copy_callback(&buf->b_tfu_cb, &tfu_cb);
+#endif
+}
 
 /*
  * Jump to tag; handling of tag commands and tag stack
@@ -301,7 +366,7 @@ do_tag(
 		    tagstacklen == 0)
 	    {
 		// empty stack
-		emsg(_(e_tagstack));
+		emsg(_(e_tag_stack_empty));
 		goto end_do_tag;
 	    }
 
@@ -1312,7 +1377,8 @@ find_tagfunc_tags(
     dict_T	*d;
     taggy_T	*tag = &curwin->w_tagstack[curwin->w_tagstackidx];
 
-    if (*curbuf->b_p_tfu == NUL)
+    if (*curbuf->b_p_tfu == NUL || curbuf->b_tfu_cb.cb_name == NULL
+					   || *curbuf->b_tfu_cb.cb_name == NUL)
 	return FAIL;
 
     args[0].v_type = VAR_STRING;
@@ -1341,7 +1407,7 @@ find_tagfunc_tags(
 		 flags & TAG_REGEXP   ? "r": "");
 
     save_pos = curwin->w_cursor;
-    result = call_vim_function(curbuf->b_p_tfu, 3, args, &rettv);
+    result = call_callback(&curbuf->b_tfu_cb, 0, &rettv, 3, args);
     curwin->w_cursor = save_pos;	// restore the cursor position
     --d->dv_refcount;
 
@@ -1961,8 +2027,6 @@ find_tags(
 		eof = vim_fgets(lbuf, lbuf_size, fp);
 		if (!eof && search_info.curr_offset != 0)
 		{
-		    // The explicit cast is to work around a bug in gcc 3.4.2
-		    // (repeated below).
 		    search_info.curr_offset = vim_ftell(fp);
 		    if (search_info.curr_offset == search_info.high_offset)
 		    {
@@ -2002,7 +2066,10 @@ find_tags(
 			eof = cs_fgets(lbuf, lbuf_size);
 		    else
 #endif
+		    {
+			search_info.curr_offset = vim_ftell(fp);
 			eof = vim_fgets(lbuf, lbuf_size, fp);
+		    }
 		} while (!eof && vim_isblankline(lbuf));
 
 		if (eof)
@@ -2244,6 +2311,10 @@ parse_line:
 		lbuf = alloc(lbuf_size);
 		if (lbuf == NULL)
 		    goto findtag_end;
+
+		if (state == TS_STEP_FORWARD)
+		    // Seek to the same position to read the same line again
+		    vim_fseek(fp, search_info.curr_offset, SEEK_SET);
 #ifdef FEAT_TAG_BINS
 		// this will try the same thing again, make sure the offset is
 		// different
@@ -2802,7 +2873,7 @@ findtag_end:
 			if (*p == TAG_SEP)
 			    *p = NUL;
 		}
-		matches[match_count++] = (char_u *)mfp;
+		matches[match_count++] = mfp;
 	    }
 	}
 

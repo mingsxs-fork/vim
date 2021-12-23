@@ -74,12 +74,6 @@ toggle_Magic(int x)
 static char_u e_missingbracket[] = N_("E769: Missing ] after %s[");
 static char_u e_reverse_range[] = N_("E944: Reverse range in character class");
 static char_u e_large_class[] = N_("E945: Range too large in character class");
-#ifdef FEAT_SYN_HL
-static char_u e_z_not_allowed[] = N_("E66: \\z( not allowed here");
-static char_u e_z1_not_allowed[] = N_("E67: \\z1 - \\z9 not allowed here");
-#endif
-static char_u e_missing_sb[] = N_("E69: Missing ] after %s%%[");
-static char_u e_empty_sb[]  = N_("E70: Empty %s%%[]");
 static char_u e_recursive[]  = N_("E956: Cannot use pattern recursively");
 
 #define NOT_MULTI	0
@@ -1129,7 +1123,7 @@ typedef struct {
     // The current match-position is stord in these variables:
     linenr_T	lnum;		// line number, relative to first line
     char_u	*line;		// start of current line
-    char_u	*input;		// current input, points into "regline"
+    char_u	*input;		// current input, points into "line"
 
     int	need_clear_subexpr;	// subexpressions still need to be cleared
 #ifdef FEAT_SYN_HL
@@ -2039,8 +2033,8 @@ vim_regsub_both(
 		argv[0].vval.v_list = &matchList.sl_list;
 		matchList.sl_list.lv_len = 0;
 		CLEAR_FIELD(funcexe);
-		funcexe.argv_func = fill_submatch_list;
-		funcexe.evaluate = TRUE;
+		funcexe.fe_argv_func = fill_submatch_list;
+		funcexe.fe_evaluate = TRUE;
 		if (expr->v_type == VAR_FUNC)
 		{
 		    s = expr->vval.v_string;
@@ -2051,7 +2045,7 @@ vim_regsub_both(
 		    partial_T   *partial = expr->vval.v_partial;
 
 		    s = partial_name(partial);
-		    funcexe.partial = partial;
+		    funcexe.fe_partial = partial;
 		    call_func(s, -1, &rettv, 1, argv, &funcexe);
 		}
 		if (matchList.sl_list.lv_len > 0)
@@ -2746,8 +2740,7 @@ report_re_switch(char_u *pat)
 }
 #endif
 
-#if (defined(FEAT_X11) && (defined(FEAT_TITLE) || defined(FEAT_XCLIPBOARD))) \
-	|| defined(PROTO)
+#if defined(FEAT_X11) || defined(PROTO)
 /*
  * Return whether "prog" is currently being executed.
  */

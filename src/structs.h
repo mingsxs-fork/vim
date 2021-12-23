@@ -123,6 +123,14 @@ typedef struct {
 #endif
 #define COLOR_INVALID(x) ((x) == INVALCOLOR || (x) == CTERMCOLOR)
 
+#ifdef FEAT_TERMINAL
+# include "libvterm/include/vterm.h"
+typedef struct {
+    VTermColor	fg;
+    VTermColor	bg;
+} termcellcolor_T;
+#endif
+
 /*
  * marks: positions in a file
  * (a normal mark is a lnum/col pair, the same as a file position)
@@ -845,6 +853,8 @@ typedef struct sign_attrs_S {
     char_u	*sat_text;
     int		sat_texthl;
     int		sat_linehl;
+    int		sat_culhl;
+    int		sat_numhl;
     int		sat_priority;
 } sign_attrs_T;
 
@@ -943,11 +953,12 @@ typedef struct {
 # define CSF_CATCH	0x0400	// ":catch" has been seen
 # define CSF_THROWN	0x0800	// exception thrown to this try conditional
 # define CSF_CAUGHT	0x1000  // exception caught by this try conditional
-# define CSF_SILENT	0x2000	// "emsg_silent" reset by ":try"
+# define CSF_FINISHED	0x2000  // CSF_CAUGHT was handled by finish_exception()
+# define CSF_SILENT	0x4000	// "emsg_silent" reset by ":try"
 // Note that CSF_ELSE is only used when CSF_TRY and CSF_WHILE are unset
 // (an ":if"), and CSF_SILENT is only used when CSF_TRY is set.
-//
-#define CSF_FUNC_DEF	0x4000	// a function was defined in this block
+
+# define CSF_FUNC_DEF	0x8000	// a function was defined in this block
 
 /*
  * What's pending for being reactivated at the ":endtry" of this try
@@ -1405,8 +1416,8 @@ typedef struct type_S type_T;
 struct type_S {
     vartype_T	    tt_type;
     int8_T	    tt_argcount;    // for func, incl. vararg, -1 for unknown
-    char	    tt_min_argcount; // number of non-optional arguments
-    char	    tt_flags;	    // TTFLAG_ values
+    int8_T	    tt_min_argcount; // number of non-optional arguments
+    char_u	    tt_flags;	    // TTFLAG_ values
     type_T	    *tt_member;	    // for list, dict, func return type
     type_T	    **tt_args;	    // func argument types, allocated
 };
@@ -1689,6 +1700,7 @@ typedef struct
 #define FC_VIM9	    0x400	// defined in vim9 script file
 #define FC_CFUNC    0x800	// defined as Lua C func
 #define FC_COPY	    0x1000	// copy of another function by copy_func()
+#define FC_LAMBDA   0x2000	// one line "return {expr}"
 
 #define MAX_FUNC_ARGS	20	// maximum number of function arguments
 #define VAR_SHORT_LEN	20	// short variable name length
@@ -1798,6 +1810,7 @@ struct svar_S {
     char_u	*sv_name;	// points into "sn_all_vars" di_key
     typval_T	*sv_tv;		// points into "sn_vars" or "sn_all_vars" di_tv
     type_T	*sv_type;
+    int		sv_type_allocated;  // call free_type() for sv_type
     int		sv_const;	// 0, ASSIGN_CONST or ASSIGN_FINAL
     int		sv_export;	// "export let var = val"
 };
@@ -1905,8 +1918,11 @@ typedef struct {
     // pointer to the last line obtained with getsourceline()
     char_u	*eval_tofree;
 
-    // pointer to the last line of an inline function
-    char_u	*eval_tofree_cmdline;
+    // array with lines of an inline function
+    garray_T	eval_tofree_ga;
+
+    // set when "arg" points into the last entry of "eval_tofree_ga"
+    int		eval_using_cmdline;
 
     // pointer to the lines concatenated for a lambda.
     char_u	*eval_tofree_lambda;
@@ -1977,23 +1993,30 @@ typedef struct
 //							called_func_argcount)
 //
 typedef struct {
-    int		(* argv_func)(int, typval_T *, int, int);
-    linenr_T	firstline;	// first line of range
-    linenr_T	lastline;	// last line of range
-    int		*doesrange;	// if not NULL: return: function handled range
-    int		evaluate;	// actually evaluate expressions
-    partial_T	*partial;	// for extra arguments
-    dict_T	*selfdict;	// Dictionary for "self"
-    typval_T	*basetv;	// base for base->method()
-    type_T	*check_type;	// type from funcref or NULL
+    int		(* fe_argv_func)(int, typval_T *, int, int);
+    linenr_T	fe_firstline;	// first line of range
+    linenr_T	fe_lastline;	// last line of range
+    int		*fe_doesrange;	// if not NULL: return: function handled range
+    int		fe_evaluate;	// actually evaluate expressions
+    partial_T	*fe_partial;	// for extra arguments
+    dict_T	*fe_selfdict;	// Dictionary for "self"
+    typval_T	*fe_basetv;	// base for base->method()
+    type_T	*fe_check_type;	// type from funcref or NULL
+    int		fe_found_var;	// if the function is not found then give an
+				// error that a variable is not callable.
 } funcexe_T;
 
 /*
  * Structure to hold the context of a compiled function, used by closures
  * defined in that function.
  */
-typedef struct funcstack_S
+typedef struct funcstack_S funcstack_T;
+
+struct funcstack_S
 {
+    funcstack_T *fs_next;	// linked list at "first_funcstack"
+    funcstack_T *fs_prev;
+
     garray_T	fs_ga;		// contains the stack, with:
 				// - arguments
 				// - frame
@@ -2004,7 +2027,7 @@ typedef struct funcstack_S
     int		fs_refcount;	// nr of closures referencing this funcstack
     int		fs_min_refcount; // nr of closures on this funcstack
     int		fs_copyID;	// for garray_T collection
-} funcstack_T;
+};
 
 typedef struct outer_S outer_T;
 struct outer_S {
@@ -2700,10 +2723,10 @@ struct file_buffer
 				// incremented for each change, also for undo
 #define CHANGEDTICK(buf) ((buf)->b_ct_di.di_tv.vval.v_number)
 
-    varnumber_T	b_last_changedtick; // b:changedtick when TextChanged or
-				    // TextChangedI was last triggered.
-    varnumber_T	b_last_changedtick_pum; // b:changedtick when TextChangedP was
+    varnumber_T	b_last_changedtick;	// b:changedtick when TextChanged was
 					// last triggered.
+    varnumber_T	b_last_changedtick_pum; // b:changedtick for TextChangedP
+    varnumber_T	b_last_changedtick_i;   // b:changedtick for TextChangedI
 
     int		b_saving;	// Set to TRUE if we are in the middle of
 				// saving the buffer.
@@ -2723,7 +2746,9 @@ struct file_buffer
     wininfo_T	*b_wininfo;	// list of last used info for each window
 
     long	b_mtime;	// last change time of original file
+    long	b_mtime_ns;	// nanoseconds of last change time
     long	b_mtime_read;	// last change time when reading
+    long	b_mtime_read_ns;  // nanoseconds of last read time
     off_T	b_orig_size;	// size of original file in bytes
     int		b_orig_mode;	// mode of original file
 #ifdef FEAT_VIMINFO
@@ -2744,14 +2769,12 @@ struct file_buffer
     pos_T	b_last_insert;	// where Insert mode was left
     pos_T	b_last_change;	// position of last change: '. mark
 
-#ifdef FEAT_JUMPLIST
     /*
      * the changelist contains old change positions
      */
     pos_T	b_changelist[JUMPLISTSIZE];
     int		b_changelistlen;	// number of active entries
     int		b_new_change;		// set by u_savecommon()
-#endif
 
     /*
      * Character table, only used in charset.c for 'iskeyword'
@@ -2860,10 +2883,13 @@ struct file_buffer
 #endif
 #ifdef FEAT_COMPL_FUNC
     char_u	*b_p_cfu;	// 'completefunc'
+    callback_T	b_cfu_cb;	// 'completefunc' callback
     char_u	*b_p_ofu;	// 'omnifunc'
+    callback_T	b_ofu_cb;	// 'omnifunc' callback
 #endif
 #ifdef FEAT_EVAL
-    char_u	*b_p_tfu;	// 'tagfunc'
+    char_u	*b_p_tfu;	// 'tagfunc' option value
+    callback_T	b_tfu_cb;	// 'tagfunc' callback
 #endif
     int		b_p_eol;	// 'endofline'
     int		b_p_fixeol;	// 'fixendofline'
@@ -2963,6 +2989,10 @@ struct file_buffer
     unsigned	b_tc_flags;     // flags for 'tagcase'
     char_u	*b_p_dict;	// 'dictionary' local value
     char_u	*b_p_tsr;	// 'thesaurus' local value
+#ifdef FEAT_COMPL_FUNC
+    char_u	*b_p_tsrfu;	// 'thesaurusfunc' local value
+    callback_T	b_tsrfu_cb;	// 'thesaurusfunc' callback
+#endif
     long	b_p_ul;		// 'undolevels' local value
 #ifdef FEAT_PERSISTENT_UNDO
     int		b_p_udf;	// 'undofile'
@@ -3192,7 +3222,8 @@ struct tabpage_S
     win_T	    *tp_first_popupwin; // first popup window in this Tab page
 #endif
     long	    tp_old_Rows;    // Rows when Tab page was left
-    long	    tp_old_Columns; // Columns when Tab page was left
+    long	    tp_old_Columns; // Columns when Tab page was left, -1 when
+				    // calling shell_new_columns() postponed
     long	    tp_ch_used;	    // value of 'cmdheight' when frame size
 				    // was set
 #ifdef FEAT_GUI
@@ -3610,6 +3641,9 @@ struct window_S
     int		w_nrwidth;	    // width of 'number' and 'relativenumber'
 				    // column being used
 #endif
+#ifdef FEAT_TERMINAL
+    termcellcolor_T w_term_wincolor;	 // cache for term color of 'wincolor'
+#endif
 
     /*
      * === end of cached values ===
@@ -3700,7 +3734,6 @@ struct window_S
     pos_T	w_pcmark;	// previous context mark
     pos_T	w_prev_pcmark;	// previous w_pcmark
 
-#ifdef FEAT_JUMPLIST
     /*
      * the jumplist contains old cursor positions
      */
@@ -3709,7 +3742,6 @@ struct window_S
     int		w_jumplistidx;		// current position
 
     int		w_changelistidx;	// current position in b_changelist
-#endif
 
 #ifdef FEAT_SEARCH_EXTRA
     matchitem_T	*w_match_head;		// head of match list
@@ -4455,4 +4487,17 @@ typedef struct {
 } where_T;
 
 #define WHERE_INIT {NULL, 0, 0}
+
+// Struct passed to get_v_event() and restore_v_event().
+typedef struct {
+    int		sve_did_save;
+    hashtab_T	sve_hashtab;
+} save_v_event_T;
+
+// Enum used by filter(), map() and mapnew()
+typedef enum {
+    FILTERMAP_FILTER,
+    FILTERMAP_MAP,
+    FILTERMAP_MAPNEW
+} filtermap_T;
 

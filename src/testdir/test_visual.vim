@@ -665,6 +665,11 @@ func Test_characterwise_visual_mode()
   normal v$rx
   call assert_equal(['x'], getline(1, '$'))
 
+  " replace a character with composing characters
+  call setline(1, "xã̳x")
+  normal gg0lvrb
+  call assert_equal("xbx", getline(1))
+
   bwipe!
 endfunc
 
@@ -1263,6 +1268,34 @@ func Test_visual_block_with_virtualedit()
   call term_sendkeys(buf, "\<Esc>")
   call StopVimInTerminal(buf)
   call delete('XTest_block')
+endfunc
+
+func Test_visual_block_ctrl_w_f()
+  " Emtpy block selected in new buffer should not result in an error.
+  au! BufNew foo sil norm f
+  edit foo
+
+  au! BufNew
+endfunc
+
+func Test_visual_reselect_with_count()
+  " this was causing an illegal memory access
+  let lines =<< trim END
+
+
+
+      :
+      r<sfile>
+      exe "%norm e3\<c-v>kr\t"
+      :
+
+      :
+  END
+  call writefile(lines, 'XvisualReselect')
+  source XvisualReselect
+
+  bwipe!
+  call delete('XvisualReselect')
 endfunc
 
 

@@ -173,7 +173,7 @@ diff_buf_add(buf_T *buf)
 	    return;
 	}
 
-    semsg(_("E96: Cannot diff more than %d buffers"), DB_COUNT);
+    semsg(_(e_cannot_diff_more_than_nr_buffers), DB_COUNT);
 }
 
 /*
@@ -656,7 +656,8 @@ diff_redraw(
 {
     win_T	*wp;
     win_T	*wp_other = NULL;
-    int		used_max_fill = FALSE;
+    int		used_max_fill_other = FALSE;
+    int		used_max_fill_curwin = FALSE;
     int		n;
 
     need_diff_redraw = FALSE;
@@ -681,16 +682,25 @@ diff_redraw(
 		{
 		    wp->w_topfill = n;
 		    if (wp == curwin)
-			used_max_fill = TRUE;
+			used_max_fill_curwin = TRUE;
+		    else if (wp_other != NULL)
+			used_max_fill_other = TRUE;
 		}
 		check_topfill(wp, FALSE);
 	    }
 	}
 
-    if (wp_other != NULL && used_max_fill && curwin->w_p_scb)
-	// The current window was set to used the maximum number of filler
-	// lines, may need to reduce them.
-	diff_set_topline(wp_other, curwin);
+    if (wp_other != NULL && curwin->w_p_scb)
+    {
+	if (used_max_fill_curwin)
+	    // The current window was set to used the maximum number of filler
+	    // lines, may need to reduce them.
+	    diff_set_topline(wp_other, curwin);
+	else if (used_max_fill_other)
+	    // The other window was set to used the maximum number of filler
+	    // lines, may need to reduce them.
+	    diff_set_topline(curwin, wp_other);
+    }
 }
 
     static void
@@ -1071,7 +1081,7 @@ check_external_diff(diffio_T *diffio)
     {
 	if (io_error)
 	    emsg(_("E810: Cannot read or write temp files"));
-	emsg(_("E97: Cannot create diffs"));
+	emsg(_(e_cannot_create_diffs));
 	diff_a_works = MAYBE;
 #if defined(MSWIN)
 	diff_bin_works = MAYBE;
@@ -1626,7 +1636,7 @@ diff_read(
 	fd = mch_fopen((char *)dout->dout_fname, "r");
 	if (fd == NULL)
 	{
-	    emsg(_("E98: Cannot read diff output"));
+	    emsg(_(e_cannot_read_diff_output));
 	    return;
 	}
     }
@@ -2615,7 +2625,7 @@ ex_diffgetput(exarg_T *eap)
     idx_cur = diff_buf_idx(curbuf);
     if (idx_cur == DB_COUNT)
     {
-	emsg(_("E99: Current buffer is not in diff mode"));
+	emsg(_(e_current_buffer_is_not_in_diff_mode));
 	return;
     }
 
@@ -2636,7 +2646,7 @@ ex_diffgetput(exarg_T *eap)
 	    if (found_not_ma)
 		emsg(_("E793: No other buffer in diff mode is modifiable"));
 	    else
-		emsg(_("E100: No other buffer in diff mode"));
+		emsg(_(e_no_other_buffer_in_diff_mode));
 	    return;
 	}
 
@@ -2646,7 +2656,7 @@ ex_diffgetput(exarg_T *eap)
 		    && curtab->tp_diffbuf[i] != NULL
 		    && (eap->cmdidx != CMD_diffput || curtab->tp_diffbuf[i]->b_p_ma))
 	    {
-		emsg(_("E101: More than two buffers in diff mode, don't know which one to use"));
+		emsg(_(e_more_than_two_buffers_in_diff_mode_dont_know_which_one_to_use));
 		return;
 	    }
     }
@@ -2669,7 +2679,7 @@ ex_diffgetput(exarg_T *eap)
 	buf = buflist_findnr(i);
 	if (buf == NULL)
 	{
-	    semsg(_("E102: Can't find buffer \"%s\""), eap->arg);
+	    semsg(_(e_cant_find_buffer_str), eap->arg);
 	    return;
 	}
 	if (buf == curbuf)
@@ -2677,7 +2687,7 @@ ex_diffgetput(exarg_T *eap)
 	idx_other = diff_buf_idx(buf);
 	if (idx_other == DB_COUNT)
 	{
-	    semsg(_("E103: Buffer \"%s\" is not in diff mode"), eap->arg);
+	    semsg(_(e_buffer_str_is_not_in_diff_mode), eap->arg);
 	    return;
 	}
     }

@@ -43,7 +43,7 @@ ses_put_fname(FILE *fd, char_u *name, unsigned *flagp)
     }
 
     // escape special characters
-    p = vim_strsave_fnameescape(sname, FALSE);
+    p = vim_strsave_fnameescape(sname, VSE_NONE);
     vim_free(sname);
     if (p == NULL)
 	return FAIL;
@@ -1331,7 +1331,7 @@ ex_mkrc(exarg_T	*eap)
 	failed |= fclose(fd);
 
 	if (failed)
-	    emsg(_(e_write));
+	    emsg(_(e_error_while_writing));
 #if defined(FEAT_SESSION)
 	else if (eap->cmdidx == CMD_mksession)
 	{

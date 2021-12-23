@@ -342,6 +342,13 @@ update_screen(int type_arg)
     update_popups(win_update);
 #endif
 
+#ifdef FEAT_TERMINAL
+    FOR_ALL_WINDOWS(wp)
+	// If this window contains a terminal, after redrawing all windows, the
+	// dirty row range can be reset.
+	term_did_update_window(wp);
+#endif
+
     after_updating_screen(TRUE);
 
     // Clear or redraw the command line.  Done last, because scrolling may
@@ -464,13 +471,13 @@ win_redr_status(win_T *wp, int ignore_pum UNUSED)
 	    *(p + len++) = ' ';
 	if (bt_help(wp->w_buffer))
 	{
-	    STRCPY(p + len, _("[Help]"));
+	    vim_snprintf((char *)p + len, MAXPATHL - len, "%s", _("[Help]"));
 	    len += (int)STRLEN(p + len);
 	}
 #ifdef FEAT_QUICKFIX
 	if (wp->w_p_pvw)
 	{
-	    STRCPY(p + len, _("[Preview]"));
+	    vim_snprintf((char *)p + len, MAXPATHL - len, "%s", _("[Preview]"));
 	    len += (int)STRLEN(p + len);
 	}
 #endif
@@ -480,12 +487,12 @@ win_redr_status(win_T *wp, int ignore_pum UNUSED)
 #endif
 		)
 	{
-	    STRCPY(p + len, "[+]");
-	    len += 3;
+	    vim_snprintf((char *)p + len, MAXPATHL - len, "%s", "[+]");
+	    len += (int)STRLEN(p + len);
 	}
 	if (wp->w_buffer->b_p_ro)
 	{
-	    STRCPY(p + len, _("[RO]"));
+	    vim_snprintf((char *)p + len, MAXPATHL - len, "%s", _("[RO]"));
 	    len += (int)STRLEN(p + len);
 	}
 
@@ -610,15 +617,14 @@ showruler(int always)
 	win_redr_ruler(curwin, always, FALSE);
 #endif
 
-#ifdef FEAT_TITLE
     if (need_maketitle
-# ifdef FEAT_STL_OPT
+#ifdef FEAT_STL_OPT
 	    || (p_icon && (stl_syntax & STL_IN_ICON))
 	    || (p_title && (stl_syntax & STL_IN_TITLE))
-# endif
+#endif
        )
 	maketitle();
-#endif
+
     // Redraw the tab pages line if needed.
     if (redraw_tabline)
 	draw_tabline();
@@ -2305,13 +2311,15 @@ win_update(win_T *wp)
 			    ++new_rows;
 			else
 #endif
+			{
 #ifdef FEAT_DIFF
 			    if (l == wp->w_topline)
-			    new_rows += plines_win_nofill(wp, l, TRUE)
+				new_rows += plines_win_nofill(wp, l, TRUE)
 							      + wp->w_topfill;
-			else
+			    else
 #endif
-			    new_rows += plines_win(wp, l, TRUE);
+				new_rows += plines_win(wp, l, TRUE);
+			}
 			++j;
 			if (new_rows > wp->w_height - row - 2)
 			{
@@ -3018,14 +3026,19 @@ redraw_asap(int type)
  * it belongs. If highlighting was changed a redraw is needed.
  * If "call_update_screen" is FALSE don't call update_screen() when at the
  * command line.
+ * If "redraw_message" is TRUE.
  */
     void
-redraw_after_callback(int call_update_screen)
+redraw_after_callback(int call_update_screen, int do_message)
 {
     ++redrawing_for_callback;
 
-    if (State == HITRETURN || State == ASKMORE)
-	; // do nothing
+    if (State == HITRETURN || State == ASKMORE || State == SETWSIZE
+	    || State == EXTERNCMD || State == CONFIRM || exmode_active)
+    {
+	if (do_message)
+	    repeat_message();
+    }
     else if (State & CMDLINE)
     {
 	// Don't redraw when in prompt_for_number().

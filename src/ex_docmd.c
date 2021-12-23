@@ -359,12 +359,6 @@ static void	ex_folddo(exarg_T *eap);
 # define ex_nbstart		ex_ni
 #endif
 
-#ifndef FEAT_JUMPLIST
-# define ex_jumps		ex_ni
-# define ex_clearjumps		ex_ni
-# define ex_changes		ex_ni
-#endif
-
 #ifndef FEAT_PROFILE
 # define ex_profile		ex_ni
 #endif
@@ -1977,43 +1971,7 @@ do_one_cmd(
 	 */
 	if (ea.skip)	    // skip this if inside :if
 	    goto doend;
-	if ((*ea.cmd == '|' || (exmode_active && ea.line1 != ea.line2))
-#ifdef FEAT_EVAL
-		&& !vim9script
-#endif
-	   )
-	{
-	    ea.cmdidx = CMD_print;
-	    ea.argt = EX_RANGE+EX_COUNT+EX_TRLBAR;
-	    if ((errormsg = invalid_range(&ea)) == NULL)
-	    {
-		correct_range(&ea);
-		ex_print(&ea);
-	    }
-	}
-	else if (ea.addr_count != 0)
-	{
-	    if (ea.line2 > curbuf->b_ml.ml_line_count)
-	    {
-		// With '-' in 'cpoptions' a line number past the file is an
-		// error, otherwise put it at the end of the file.
-		if (vim_strchr(p_cpo, CPO_MINUS) != NULL)
-		    ea.line2 = -1;
-		else
-		    ea.line2 = curbuf->b_ml.ml_line_count;
-	    }
-
-	    if (ea.line2 < 0)
-		errormsg = _(e_invalid_range);
-	    else
-	    {
-		if (ea.line2 == 0)
-		    curwin->w_cursor.lnum = 1;
-		else
-		    curwin->w_cursor.lnum = ea.line2;
-		beginline(BL_SOL | BL_FIX);
-	    }
-	}
+	errormsg = ex_range_without_command(&ea);
 	goto doend;
     }
 
@@ -2347,7 +2305,7 @@ do_one_cmd(
 	    // versions.
 	    if (*p == '\\' && p[1] == '\n')
 		STRMOVE(p, p + 1);
-	    else if (*p == '\n')
+	    else if (*p == '\n' && !(ea.argt & EX_EXPR_ARG))
 	    {
 		ea.nextcmd = p + 1;
 		*p = NUL;
@@ -2382,9 +2340,12 @@ do_one_cmd(
 	    // for '=' register: accept the rest of the line as an expression
 	    if (ea.arg[-1] == '=' && ea.arg[0] != NUL)
 	    {
-		set_expr_line(vim_strsave(ea.arg), &ea);
+		if (!ea.skip)
+		{
+		    set_expr_line(vim_strsave(ea.arg), &ea);
+		    did_set_expr_line = TRUE;
+		}
 		ea.arg += STRLEN(ea.arg);
-		did_set_expr_line = TRUE;
 	    }
 #endif
 	    ea.arg = skipwhite(ea.arg);
@@ -2399,7 +2360,7 @@ do_one_cmd(
 	    && (!(ea.argt & EX_BUFNAME) || *(p = skipdigits(ea.arg + 1)) == NUL
 							  || VIM_ISWHITE(*p)))
     {
-	n = getdigits(&ea.arg);
+	n = getdigits_quoted(&ea.arg);
 	ea.arg = skipwhite(ea.arg);
 	if (n <= 0 && !ni && (ea.argt & EX_ZEROR) == 0)
 	{
@@ -2705,6 +2666,55 @@ ex_errmsg(char *msg, char_u *arg)
 }
 
 /*
+ * Handle a range without a command.
+ * Returns an error message on failure.
+ */
+    char *
+ex_range_without_command(exarg_T *eap)
+{
+    char *errormsg = NULL;
+
+    if ((*eap->cmd == '|' || (exmode_active && eap->line1 != eap->line2))
+#ifdef FEAT_EVAL
+	    && !in_vim9script()
+#endif
+       )
+    {
+	eap->cmdidx = CMD_print;
+	eap->argt = EX_RANGE+EX_COUNT+EX_TRLBAR;
+	if ((errormsg = invalid_range(eap)) == NULL)
+	{
+	    correct_range(eap);
+	    ex_print(eap);
+	}
+    }
+    else if (eap->addr_count != 0)
+    {
+	if (eap->line2 > curbuf->b_ml.ml_line_count)
+	{
+	    // With '-' in 'cpoptions' a line number past the file is an
+	    // error, otherwise put it at the end of the file.
+	    if (vim_strchr(p_cpo, CPO_MINUS) != NULL)
+		eap->line2 = -1;
+	    else
+		eap->line2 = curbuf->b_ml.ml_line_count;
+	}
+
+	if (eap->line2 < 0)
+	    errormsg = _(e_invalid_range);
+	else
+	{
+	    if (eap->line2 == 0)
+		curwin->w_cursor.lnum = 1;
+	    else
+		curwin->w_cursor.lnum = eap->line2;
+	    beginline(BL_SOL | BL_FIX);
+	}
+    }
+    return errormsg;
+}
+
+/*
  * Check for an Ex command with optional tail.
  * If there is a match advance "pp" to the argument and return TRUE.
  * If "noparen" is TRUE do not recognize the command followed by "(".
@@ -2907,7 +2917,14 @@ parse_command_modifiers(
 			    int	    c = 0;
 
 			    if (!checkforcmd_noparen(&p, "filter", 4)
-						|| *p == NUL || ends_excmd(*p))
+				    || *p == NUL
+				    || (ends_excmd(*p)
+#ifdef FEAT_EVAL
+					// in ":filter #pat# cmd" # does not
+					// start a comment
+				     && (!in_vim9script() || VIM_ISWHITE(p[1]))
+#endif
+				     ))
 				break;
 			    if (*p == '!')
 			    {
@@ -3597,6 +3614,15 @@ find_ex_command(
 	    }
 	}
 
+	// "g:", "s:" and "l:" are always assumed to be a variable, thus start
+	// an expression.  A global/substitute/list command needs to use a
+	// longer name.
+	if (vim_strchr((char_u *)"gsl", *p) != NULL && p[1] == ':')
+	{
+	    eap->cmdidx = CMD_eval;
+	    return eap->cmd;
+	}
+
 	// If it is an ID it might be a variable with an operator on the next
 	// line, if the variable exists it can't be an Ex command.
 	if (p > eap->cmd && ends_excmd(*skipwhite(p))
@@ -3931,10 +3957,11 @@ excmd_get_argt(cmdidx_T idx)
  */
     char_u *
 skip_range(
-    char_u	*cmd,
+    char_u	*cmd_start,
     int		skip_star,	// skip "*" used for Visual range
     int		*ctx)		// pointer to xp_context or NULL
 {
+    char_u	*cmd = cmd_start;
     unsigned	delim;
 
     while (vim_strchr((char_u *)" \t0123456789.$%'/?-+,;\\", *cmd) != NULL)
@@ -3948,6 +3975,17 @@ skip_range(
 	}
 	else if (*cmd == '\'')
 	{
+	    char_u *p = cmd;
+
+	    // a quote is only valid at the start or after a separator
+	    while (p > cmd_start)
+	    {
+		--p;
+		if (!VIM_ISWHITE(*p))
+		    break;
+	    }
+	    if (cmd > cmd_start && !VIM_ISWHITE(*p) && *p != ',' && *p != ';')
+		break;
 	    if (*++cmd == NUL && ctx != NULL)
 		*ctx = EXPAND_NOTHING;
 	}
@@ -4226,8 +4264,10 @@ get_address(
 
 		    // When '/' or '?' follows another address, start from
 		    // there.
-		    if (lnum != MAXLNUM)
-			curwin->w_cursor.lnum = lnum;
+		    if (lnum > 0 && lnum != MAXLNUM)
+			curwin->w_cursor.lnum =
+				lnum > curbuf->b_ml.ml_line_count
+					   ? curbuf->b_ml.ml_line_count : lnum;
 
 		    // Start a forward search at the end of the line (unless
 		    // before the first line).
@@ -4366,7 +4406,14 @@ get_address(
 	    if (!VIM_ISDIGIT(*cmd))	// '+' is '+1', but '+0' is not '+1'
 		n = 1;
 	    else
+	    {
 		n = getdigits(&cmd);
+		if (n == MAXLNUM)
+		{
+		    emsg(_(e_line_number_out_of_range));
+		    goto error;
+		}
+	    }
 
 	    if (addr_type == ADDR_TABS_RELATIVE)
 	    {
@@ -4384,13 +4431,20 @@ get_address(
 		// Relative line addressing, need to adjust for folded lines
 		// now, but only do it after the first address.
 		if (addr_type == ADDR_LINES && (i == '-' || i == '+')
-			&& address_count >= 2)
+							 && address_count >= 2)
 		    (void)hasFolding(lnum, NULL, &lnum);
 #endif
 		if (i == '-')
 		    lnum -= n;
 		else
+		{
+		    if (n >= LONG_MAX - lnum)
+		    {
+			emsg(_(e_line_number_out_of_range));
+			goto error;
+		    }
 		    lnum += n;
+		}
 	    }
 	}
     } while (*cmd == '/' || *cmd == '?');
@@ -4579,7 +4633,11 @@ invalid_range(exarg_T *eap)
 #ifdef FEAT_QUICKFIX
 		// No error for value that is too big, will use the last entry.
 		if (eap->line2 <= 0)
+		{
+		    if (eap->addr_count == 0)
+			return _(e_no_errors);
 		    return _(e_invalid_range);
+		}
 #endif
 		break;
 	    case ADDR_QUICKFIX_VALID:
@@ -6158,14 +6216,10 @@ ex_stop(exarg_T *eap)
 	out_flush();
 	stoptermcap();
 	out_flush();		// needed for SUN to restore xterm buffer
-#ifdef FEAT_TITLE
 	mch_restore_title(SAVE_RESTORE_BOTH);	// restore window titles
-#endif
 	ui_suspend();		// call machine specific function
-#ifdef FEAT_TITLE
 	maketitle();
 	resettitle();		// force updating the title
-#endif
 	starttermcap();
 	scroll_start();		// scroll screen before redrawing
 	redraw_later_clear();
@@ -6821,13 +6875,17 @@ ex_open(exarg_T *eap)
 	regmatch.regprog = vim_regcomp(eap->arg, magic_isset() ? RE_MAGIC : 0);
 	if (regmatch.regprog != NULL)
 	{
+	    // make a copy of the line, when searching for a mark it might be
+	    // flushed
+	    char_u *line = vim_strsave(ml_get_curline());
+
 	    regmatch.rm_ic = p_ic;
-	    p = ml_get_curline();
-	    if (vim_regexec(&regmatch, p, (colnr_T)0))
-		curwin->w_cursor.col = (colnr_T)(regmatch.startp[0] - p);
+	    if (vim_regexec(&regmatch, line, (colnr_T)0))
+		curwin->w_cursor.col = (colnr_T)(regmatch.startp[0] - line);
 	    else
 		emsg(_(e_nomatch));
 	    vim_regfree(regmatch.regprog);
+	    vim_free(line);
 	}
 	// Move to the NUL, ignore any other arguments.
 	eap->arg += STRLEN(eap->arg);
@@ -7000,14 +7058,10 @@ do_exedit(
     {
 	if (eap->do_ecmd_cmd != NULL)
 	    do_cmd_argument(eap->do_ecmd_cmd);
-#ifdef FEAT_TITLE
 	n = curwin->w_arg_idx_invalid;
-#endif
 	check_arg_idx(curwin);
-#ifdef FEAT_TITLE
 	if (n != curwin->w_arg_idx_invalid)
 	    maketitle();
-#endif
     }
 
     /*
@@ -7287,6 +7341,7 @@ post_chdir(cdscope_T scope)
 	VIM_CLEAR(globaldir);
     }
 
+    last_chdir_reason = NULL;
     shorten_fnames(TRUE);
 }
 
@@ -7345,9 +7400,13 @@ changedir_func(
     else
 	prev_dir = pdir;
 
+    // For UNIX ":cd" means: go to home directory.
+    // On other systems too if 'cdhome' is set.
 #if defined(UNIX) || defined(VMS)
-    // for UNIX ":cd" means: go to home directory
     if (*new_dir == NUL)
+#else
+    if (*new_dir == NUL && p_cdh)
+#endif
     {
 	// use NameBuff for home directory name
 # ifdef VMS
@@ -7363,7 +7422,6 @@ changedir_func(
 # endif
 	new_dir = NameBuff;
     }
-#endif
     dir_differs = new_dir == NULL || pdir == NULL
 	|| pathcmp((char *)pdir, (char *)new_dir, -1) != 0;
     if (new_dir == NULL || (dir_differs && vim_chdir(new_dir)))
@@ -7402,8 +7460,8 @@ ex_cd(exarg_T *eap)
 
     new_dir = eap->arg;
 #if !defined(UNIX) && !defined(VMS)
-    // for non-UNIX ":cd" means: print current directory
-    if (*new_dir == NUL)
+    // for non-UNIX ":cd" means: print current directory unless 'cdhome' is set
+    if (*new_dir == NUL && !p_cdh)
 	ex_pwd(NULL);
     else
 #endif
@@ -7439,7 +7497,9 @@ ex_pwd(exarg_T *eap UNUSED)
 	{
 	    char *context = "global";
 
-	    if (curwin->w_localdir != NULL)
+	    if (last_chdir_reason != NULL)
+		context = last_chdir_reason;
+	    else if (curwin->w_localdir != NULL)
 		context = "window";
 	    else if (curtab->tp_localdir != NULL)
 		context = "tabpage";
@@ -7760,6 +7820,7 @@ ex_put(exarg_T *eap)
 	eap->forceit = TRUE;
     }
     curwin->w_cursor.lnum = eap->line2;
+    check_cursor_col();
     do_put(eap->regname, NULL, eap->forceit ? BACKWARD : FORWARD, 1L,
 						       PUT_LINE|PUT_CURSLINE);
 }
@@ -8127,10 +8188,8 @@ ex_redraw(exarg_T *eap)
     validate_cursor();
     update_topline();
     update_screen(eap->forceit ? CLEAR : VIsual_active ? INVERTED : 0);
-#ifdef FEAT_TITLE
     if (need_maketitle)
 	maketitle();
-#endif
 #if defined(MSWIN) && (!defined(FEAT_GUI_MSWIN) || defined(VIMDLL))
 # ifdef VIMDLL
     if (!gui.in_use)
@@ -9109,7 +9168,7 @@ eval_vars(
 	case SPEC_SID:
 		if (current_sctx.sc_sid <= 0)
 		{
-		    *errormsg = _(e_usingsid);
+		    *errormsg = _(e_using_sid_not_in_script_context);
 		    return NULL;
 		}
 		sprintf((char *)strbuf, "<SNR>%d_", current_sctx.sc_sid);

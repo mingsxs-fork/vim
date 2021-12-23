@@ -1735,9 +1735,7 @@ set_fileformat(
     // This may cause the buffer to become (un)modified.
     check_status(curbuf);
     redraw_tabline = TRUE;
-#ifdef FEAT_TITLE
     need_maketitle = TRUE;	    // set window title later
-#endif
 }
 
 /*
@@ -1782,7 +1780,7 @@ call_shell(char_u *cmd, int opt)
 
     if (*p_sh == NUL)
     {
-	emsg(_(e_shellempty));
+	emsg(_(e_shell_option_is_empty));
 	retval = -1;
     }
     else
@@ -2953,6 +2951,7 @@ build_argv_from_list(list_T *l, char ***argv, int *argc)
 
 	    for (i = 0; i < *argc; ++i)
 		VIM_CLEAR((*argv)[i]);
+	    (*argv)[0] = NULL;
 	    return FAIL;
 	}
 	(*argv)[*argc] = (char *)vim_strsave(s);

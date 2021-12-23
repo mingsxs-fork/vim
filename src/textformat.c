@@ -89,6 +89,7 @@ internal_format(
 	colnr_T	col;
 	colnr_T	end_col;
 	int	wcc;			// counter for whitespace chars
+	int	did_do_comment = FALSE;
 
 	virtcol = get_nolist_virtcol()
 		+ char2cells(c != NUL ? c : gchar_cursor());
@@ -352,9 +353,15 @@ internal_format(
 		+ (fo_white_par ? OPENLINE_KEEPTRAIL : 0)
 		+ (do_comments ? OPENLINE_DO_COM : 0)
 		+ ((flags & INSCHAR_COM_LIST) ? OPENLINE_COM_LIST : 0)
-		, ((flags & INSCHAR_COM_LIST) ? second_indent : old_indent));
+		, ((flags & INSCHAR_COM_LIST) ? second_indent : old_indent),
+		&did_do_comment);
 	if (!(flags & INSCHAR_COM_LIST))
 	    old_indent = 0;
+
+	// If a comment leader was inserted, may also do this on a following
+	// line.
+	if (did_do_comment)
+	    no_leader = FALSE;
 
 	replace_offset = 0;
 	if (first_line)
@@ -954,6 +961,7 @@ format_lines(
     int		smd_save;
     long	count;
     int		need_set_indent = TRUE;	// set indent of next paragraph
+    linenr_T	first_line = curwin->w_cursor.lnum;
     int		force_format = FALSE;
     int		old_State = State;
 
@@ -1070,9 +1078,37 @@ format_lines(
 	    if (is_end_par || force_format)
 	    {
 		if (need_set_indent)
-		    // replace indent in first line with minimal number of
-		    // tabs and spaces, according to current options
-		    (void)set_indent(get_indent(), SIN_CHANGED);
+		{
+		    int		indent = 0; // amount of indent needed
+
+		    // Replace indent in first line of a paragraph with minimal
+		    // number of tabs and spaces, according to current options.
+		    // For the very first formatted line keep the current
+		    // indent.
+		    if (curwin->w_cursor.lnum == first_line)
+			indent = get_indent();
+		    else
+# ifdef FEAT_LISP
+		    if (curbuf->b_p_lisp)
+			indent = get_lisp_indent();
+		    else
+# endif
+		    {
+#ifdef FEAT_CINDENT
+			if (cindent_on())
+			{
+			    indent =
+# ifdef FEAT_EVAL
+				 *curbuf->b_p_inde != NUL ? get_expr_indent() :
+# endif
+				 get_c_indent();
+			}
+			else
+#endif
+			    indent = get_indent();
+		    }
+		    (void)set_indent(indent, SIN_CHANGED);
+		}
 
 		// put cursor on last non-space
 		State = NORMAL;	// don't go past end-of-line

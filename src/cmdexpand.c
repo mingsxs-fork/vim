@@ -48,6 +48,8 @@ ExpandEscape(
 {
     int		i;
     char_u	*p;
+    int		vse_what = xp->xp_context == EXPAND_BUFFERS
+						       ? VSE_BUFFER : VSE_NONE;
 
     // May change home directory back to "~"
     if (options & WILD_HOME_REPLACE)
@@ -84,9 +86,10 @@ ExpandEscape(
 		    }
 		}
 #ifdef BACKSLASH_IN_FILENAME
-		p = vim_strsave_fnameescape(files[i], FALSE);
+		p = vim_strsave_fnameescape(files[i], vse_what);
 #else
-		p = vim_strsave_fnameescape(files[i], xp->xp_shell);
+		p = vim_strsave_fnameescape(files[i],
+					  xp->xp_shell ? VSE_SHELL : vse_what);
 #endif
 		if (p != NULL)
 		{
@@ -403,7 +406,7 @@ ExpandOne(
 		    // together. Don't really want to wait for this message
 		    // (and possibly have to hit return to continue!).
 		    if (!(options & WILD_SILENT))
-			emsg(_(e_toomany));
+			emsg(_(e_too_many_file_names));
 		    else if (!(options & WILD_NO_BEEP))
 			beep_flush();
 		}
@@ -975,6 +978,7 @@ set_one_cmd_context(
 
     ExpandInit(xp);
     xp->xp_pattern = buff;
+    xp->xp_line = buff;
     xp->xp_context = EXPAND_COMMANDS;	// Default until we get past command
     ea.argt = 0;
 
@@ -2888,7 +2892,7 @@ f_getcompletion(typval_T *argvars, typval_T *rettv)
     expand_T	xpc;
     int		filtered = FALSE;
     int		options = WILD_SILENT | WILD_USE_NL | WILD_ADD_SLASH
-								| WILD_NO_BEEP;
+					| WILD_NO_BEEP | WILD_HOME_REPLACE;
 
     if (in_vim9script()
 	    && (check_for_string_arg(argvars, 0) == FAIL
@@ -2896,6 +2900,7 @@ f_getcompletion(typval_T *argvars, typval_T *rettv)
 		|| check_for_opt_bool_arg(argvars, 2) == FAIL))
 	return;
 
+    pat = tv_get_string(&argvars[0]);
     if (argvars[1].v_type != VAR_STRING)
     {
 	semsg(_(e_invarg2), "type must be a string");
@@ -2916,12 +2921,13 @@ f_getcompletion(typval_T *argvars, typval_T *rettv)
     ExpandInit(&xpc);
     if (STRCMP(type, "cmdline") == 0)
     {
-	set_one_cmd_context(&xpc, tv_get_string(&argvars[0]));
+	set_one_cmd_context(&xpc, pat);
 	xpc.xp_pattern_len = (int)STRLEN(xpc.xp_pattern);
+	xpc.xp_col = (int)STRLEN(pat);
     }
     else
     {
-	xpc.xp_pattern = tv_get_string(&argvars[0]);
+	xpc.xp_pattern = pat;
 	xpc.xp_pattern_len = (int)STRLEN(xpc.xp_pattern);
 
 	xpc.xp_context = cmdcomplete_str_to_type(type);

@@ -491,7 +491,7 @@ def Test_call_varargs()
 enddef
 
 def Test_call_white_space()
-  CheckDefAndScriptFailure2(["call Test ('text')"], 'E476:', 'E1068:')
+  CheckDefAndScriptFailure(["call Test ('text')"], ['E476:', 'E1068:'])
 enddef
 
 def MyDefaultArgs(name = 'string'): string
@@ -547,6 +547,29 @@ def Test_call_default_args()
       defcompile
   END
   CheckScriptFailure(lines, 'E1001: Variable not found: b')
+
+  # using script variable requires matching type or type cast when executed
+  lines =<< trim END
+      vim9script
+      var a: any
+      def Func(arg: string = a)
+        echo arg
+      enddef
+      defcompile
+  END
+  CheckScriptSuccess(lines + ['a = "text"', 'Func()'])
+  CheckScriptFailure(lines + ['a = 123', 'Func()'], 'E1013: Argument 1: type mismatch, expected string but got number')
+
+  # using global variable does not require type cast
+  lines =<< trim END
+      vim9script
+      def Func(arg: string = g:str)
+        echo arg
+      enddef
+      g:str = 'works'
+      Func()
+  END
+  CheckScriptSuccess(lines)
 enddef
 
 def FuncWithComment(  # comment
@@ -586,15 +609,19 @@ def Test_func_with_comments()
 enddef
 
 def Test_nested_function()
-  def Nested(arg: string): string
+  def NestedDef(arg: string): string
     return 'nested ' .. arg
   enddef
-  Nested('function')->assert_equal('nested function')
+  NestedDef(':def')->assert_equal('nested :def')
+
+  func NestedFunc(arg)
+    return 'nested ' .. a:arg
+  endfunc
+  NestedFunc(':func')->assert_equal('nested :func')
 
   CheckDefFailure(['def Nested()', 'enddef', 'Nested(66)'], 'E118:')
   CheckDefFailure(['def Nested(arg: string)', 'enddef', 'Nested()'], 'E119:')
 
-  CheckDefFailure(['func Nested()', 'endfunc'], 'E1086:')
   CheckDefFailure(['def s:Nested()', 'enddef'], 'E1075:')
   CheckDefFailure(['def b:Nested()', 'enddef'], 'E1075:')
 
@@ -705,6 +732,26 @@ def Test_nested_global_function()
   lines =<< trim END
       vim9script
       def Outer()
+          func g:Inner()
+            return 'inner'
+          endfunc
+      enddef
+      defcompile
+      Outer()
+      g:Inner()->assert_equal('inner')
+      delfunc g:Inner
+      Outer()
+      g:Inner()->assert_equal('inner')
+      delfunc g:Inner
+      Outer()
+      g:Inner()->assert_equal('inner')
+      delfunc g:Inner
+  END
+  CheckScriptSuccess(lines)
+
+  lines =<< trim END
+      vim9script
+      def Outer()
           def g:Inner(): string
               return 'inner'
           enddef
@@ -741,7 +788,18 @@ def Test_nested_global_function()
       enddef
       defcompile
   END
-  CheckScriptFailure(lines, "E1073:")
+  CheckScriptFailure(lines, "E1073:", 1)
+
+  lines =<< trim END
+      vim9script
+      def Func()
+        echo 'script'
+      enddef
+      def Func()
+        echo 'script'
+      enddef
+  END
+  CheckScriptFailure(lines, "E1073:", 5)
 enddef
 
 def DefListAll()
@@ -1052,6 +1110,20 @@ def Test_call_lambda_args()
   CheckScriptFailure(['vim9script'] + lines, 'E118: Too many arguments for function: <lambda>', 2)
 enddef
 
+def Test_lambda_line_nr()
+  var lines =<< trim END
+      vim9script
+      # comment
+      # comment
+      var id = timer_start(1'000, (_) => 0)
+      var out = execute('verbose ' .. timer_info(id)[0].callback
+          ->string()
+          ->substitute("('\\|')", ' ', 'g'))
+      assert_match('Last set from .* line 4', out)
+  END
+  CheckScriptSuccess(lines)
+enddef
+
 def FilterWithCond(x: string, Cond: func(string): bool): bool
   return Cond(x)
 enddef
@@ -1129,6 +1201,110 @@ def Test_pass_legacy_lambda_to_def_func()
       enddef
       legacy call g:TestFunc({nr -> 0})
       delfunc g:TestFunc
+  END
+  CheckScriptSuccess(lines)
+enddef
+
+def Test_lambda_in_reduce_line_break()
+  # this was using freed memory
+  var lines =<< trim END
+      vim9script
+      const result: dict<number> =
+          ['Bob', 'Sam', 'Cat', 'Bob', 'Cat', 'Cat']
+          ->reduce((acc, val) => {
+              if has_key(acc, val)
+                  acc[val] += 1
+                  return acc
+              else
+                  acc[val] = 1
+                  return acc
+              endif
+          }, {})
+      assert_equal({Bob: 2, Sam: 1, Cat: 3}, result)
+  END
+  CheckScriptSuccess(lines)
+enddef
+
+def Test_set_opfunc_to_lambda()
+  var lines =<< trim END
+    vim9script
+    nnoremap <expr> <F4> <SID>CountSpaces() .. '_'
+    def CountSpaces(type = ''): string
+      if type == ''
+        &operatorfunc = (t) => CountSpaces(t)
+        return 'g@'
+      endif
+      normal! '[V']y
+      g:result = getreg('"')->count(' ')
+      return ''
+    enddef
+    new
+    'a b c d e'->setline(1)
+    feedkeys("\<F4>", 'x')
+    assert_equal(4, g:result)
+    bwipe!
+  END
+  CheckScriptSuccess(lines)
+enddef
+
+def Test_set_opfunc_to_global_function()
+  var lines =<< trim END
+    vim9script
+    def g:CountSpaces(type = ''): string
+      normal! '[V']y
+      g:result = getreg('"')->count(' ')
+      return ''
+    enddef
+    # global function works at script level
+    &operatorfunc = g:CountSpaces
+    new
+    'a b c d e'->setline(1)
+    feedkeys("g@_", 'x')
+    assert_equal(4, g:result)
+
+    &operatorfunc = ''
+    g:result = 0
+    # global function works in :def function
+    def Func()
+      &operatorfunc = g:CountSpaces
+    enddef
+    Func()
+    feedkeys("g@_", 'x')
+    assert_equal(4, g:result)
+
+    bwipe!
+  END
+  CheckScriptSuccess(lines)
+  &operatorfunc = ''
+enddef
+
+def Test_use_script_func_name_with_prefix()
+  var lines =<< trim END
+      vim9script
+      func s:Getit()
+        return 'it'
+      endfunc
+      var Fn = s:Getit
+      assert_equal('it', Fn())
+  END
+  CheckScriptSuccess(lines)
+enddef
+
+def Test_lambda_type_allocated()
+  # Check that unreferencing a partial using a lambda can use the variable type
+  # after the lambda has been freed and does not leak memory.
+  var lines =<< trim END
+    vim9script
+
+    func MyomniFunc1(val, findstart, base)
+      return a:findstart ? 0 : []
+    endfunc
+
+    var Lambda = (a, b) => MyomniFunc1(19, a, b)
+    &omnifunc = Lambda
+    Lambda = (a, b) => MyomniFunc1(20, a, b)
+    &omnifunc = string(Lambda)
+    Lambda = (a, b) => strlen(a)
   END
   CheckScriptSuccess(lines)
 enddef
@@ -1349,7 +1525,7 @@ endfunc
 def Test_call_funcref()
   g:SomeFunc('abc')->assert_equal(3)
   assert_fails('NotAFunc()', 'E117:', '', 2, 'Test_call_funcref') # comment after call
-  assert_fails('g:NotAFunc()', 'E117:', '', 3, 'Test_call_funcref')
+  assert_fails('g:NotAFunc()', 'E1085:', '', 3, 'Test_call_funcref')
 
   var lines =<< trim END
     vim9script
@@ -1760,6 +1936,41 @@ def Test_delfunc()
   assert_fails('so XToDelFunc', 'E933:', '', 1, 'CallGoneSoon')
 
   delete('XToDelFunc')
+enddef
+
+func Test_free_dict_while_in_funcstack()
+  " relies on the sleep command
+  CheckUnix
+  call Run_Test_free_dict_while_in_funcstack()
+endfunc
+
+def Run_Test_free_dict_while_in_funcstack()
+
+  # this was freeing the TermRun() default argument dictionary while it was
+  # still referenced in a funcstack_T
+  var lines =<< trim END
+      vim9script
+
+      &updatetime = 400
+      def TermRun(_ = {})
+          def Post()
+          enddef
+          def Exec()
+              term_start('sleep 1', {
+                  term_finish: 'close',
+                  exit_cb: (_, _) => Post(),
+              })
+          enddef
+          Exec()
+      enddef
+      nnoremap <F4> <Cmd>call <SID>TermRun()<CR>
+      timer_start(100, (_) => feedkeys("\<F4>"))
+      timer_start(1000, (_) => feedkeys("\<F4>"))
+      sleep 1500m
+  END
+  CheckScriptSuccess(lines)
+  nunmap <F4>
+  set updatetime&
 enddef
 
 def Test_redef_failure()
@@ -2315,6 +2526,21 @@ def Test_global_closure_called_directly()
   delfunc g:Inner
 enddef
 
+def Test_closure_called_from_legacy()
+  var lines =<< trim END
+      vim9script
+      def Func()
+        var outer = 'foo'
+        var F = () => {
+              outer = 'bar'
+            }
+        execute printf('call %s()', string(F))
+      enddef
+      Func()
+  END
+  CheckScriptFailure(lines, 'E1248')
+enddef
+
 def Test_failure_in_called_function()
   # this was using the frame index as the return value
   var lines =<< trim END
@@ -2607,25 +2833,28 @@ enddef
 
 func Test_silent_echo()
   CheckScreendump
+  call Run_Test_silent_echo()
+endfunc
 
-  let lines =<< trim END
+def Run_Test_silent_echo()
+  var lines =<< trim END
     vim9script
     def EchoNothing()
       silent echo ''
     enddef
     defcompile
   END
-  call writefile(lines, 'XTest_silent_echo')
+  writefile(lines, 'XTest_silent_echo')
 
-  " Check that the balloon shows up after a mouse move
-  let buf = RunVimInTerminal('-S XTest_silent_echo', {'rows': 6})
-  call term_sendkeys(buf, ":abc")
-  call VerifyScreenDump(buf, 'Test_vim9_silent_echo', {})
+  # Check that the balloon shows up after a mouse move
+  var buf = RunVimInTerminal('-S XTest_silent_echo', {'rows': 6})
+  term_sendkeys(buf, ":abc")
+  VerifyScreenDump(buf, 'Test_vim9_silent_echo', {})
 
-  " clean up
-  call StopVimInTerminal(buf)
-  call delete('XTest_silent_echo')
-endfunc
+  # clean up
+  StopVimInTerminal(buf)
+  delete('XTest_silent_echo')
+enddef
 
 def SilentlyError()
   execute('silent! invalid')
@@ -3007,6 +3236,42 @@ def Test_opfunc()
 
   bwipe!
   nunmap <F3>
+enddef
+
+func Test_opfunc_error()
+  CheckScreendump
+  call Run_Test_opfunc_error()
+endfunc
+
+def Run_Test_opfunc_error()
+  # test that the error from Opfunc() is displayed right away
+  var lines =<< trim END
+      vim9script
+
+      def Opfunc(type: string)
+        try
+          eval [][0]
+        catch /nothing/  # error not caught
+        endtry
+      enddef
+      &operatorfunc = Opfunc
+      nnoremap <expr> l <SID>L()
+      def L(): string
+        return 'l'
+      enddef
+      'x'->repeat(10)->setline(1)
+      feedkeys('g@l', 'n')
+      feedkeys('llll')
+  END
+  call writefile(lines, 'XTest_opfunc_error')
+
+  var buf = RunVimInTerminal('-S XTest_opfunc_error', {rows: 6, wait_for_ruler: 0})
+  WaitForAssert(() => assert_match('Press ENTER', term_getline(buf, 6)))
+  WaitForAssert(() => assert_match('E684: list index out of range: 0', term_getline(buf, 5)))
+
+  # clean up
+  StopVimInTerminal(buf)
+  delete('XTest_opfunc_error')
 enddef
 
 " this was crashing on exit

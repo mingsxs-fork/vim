@@ -1459,14 +1459,27 @@ getvcols(
 }
 
 /*
- * skipwhite: skip over ' ' and '\t'.
+ * Skip over ' ' and '\t'.
  */
     char_u *
 skipwhite(char_u *q)
 {
     char_u	*p = q;
 
-    while (VIM_ISWHITE(*p)) // skip to next non-white
+    while (VIM_ISWHITE(*p))
+	++p;
+    return p;
+}
+
+/*
+ * skip over ' ', '\t' and '\n'.
+ */
+    char_u *
+skipwhite_and_nl(char_u *q)
+{
+    char_u	*p = q;
+
+    while (VIM_ISWHITE(*p) || *p == NL)
 	++p;
     return p;
 }
@@ -1748,7 +1761,7 @@ skiptowhite_esc(char_u *p)
 }
 
 /*
- * Getdigits: Get a number from a string and skip over it.
+ * Get a number from a string and skip over it.
  * Note: the argument is a pointer to a char_u pointer!
  */
     long
@@ -1762,6 +1775,38 @@ getdigits(char_u **pp)
     if (*p == '-')		// skip negative sign
 	++p;
     p = skipdigits(p);		// skip to next non-digit
+    *pp = p;
+    return retval;
+}
+
+/*
+ * Like getdigits() but allow for embedded single quotes.
+ */
+    long
+getdigits_quoted(char_u **pp)
+{
+    char_u	*p = *pp;
+    long	retval = 0;
+
+    if (*p == '-')
+	++p;
+    while (VIM_ISDIGIT(*p))
+    {
+	if (retval >= LONG_MAX / 10 - 10)
+	    retval = LONG_MAX;
+	else
+	    retval = retval * 10 - '0' + *p;
+	++p;
+	if (in_vim9script() && *p == '\'' && VIM_ISDIGIT(p[1]))
+	    ++p;
+    }
+    if (**pp == '-')
+    {
+	if (retval == LONG_MAX)
+	    retval = LONG_MIN;
+	else
+	    retval = -retval;
+    }
     *pp = p;
     return retval;
 }
@@ -2013,8 +2058,6 @@ hex2nr(int c)
     return c - '0';
 }
 
-#if defined(FEAT_TERMRESPONSE) || defined(FEAT_GUI_GTK) \
-        || defined(PROTO) || defined(FEAT_AUTOSHELLDIR)
 /*
  * Convert two hex characters to a byte.
  * Return -1 if one of the characters is not hex.
@@ -2026,7 +2069,6 @@ hexhex2nr(char_u *p)
 	return -1;
     return (hex2nr(p[0]) << 4) + hex2nr(p[1]);
 }
-#endif
 
 /*
  * Return TRUE if "str" starts with a backslash that should be removed.

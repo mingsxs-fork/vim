@@ -316,6 +316,7 @@ def s:ScriptFuncStore()
   w:windowvar = 'wv'
   t:tabpagevar = 'tv'
   &tabstop = 8
+  &opfunc = (t) => len(t)
   $ENVVAR = 'ev'
   @z = 'rv'
 enddef
@@ -343,12 +344,17 @@ def Test_disassemble_store()
         ' STOREW w:windowvar.*' ..
         't:tabpagevar = ''tv''.*' ..
         ' STORET t:tabpagevar.*' ..
-        '&tabstop = 8.*' ..
-        ' STOREOPT &tabstop.*' ..
-        '$ENVVAR = ''ev''.*' ..
-        ' STOREENV $ENVVAR.*' ..
+        '&tabstop = 8\_s*' ..
+        '\d\+ PUSHNR 8\_s*' ..
+        '\d\+ STOREOPT &tabstop\_s*' ..
+        '&opfunc = (t) => len(t)\_s*' ..
+        '\d\+ FUNCREF <lambda>\d\+\_s*' ..
+        '\d\+ STOREFUNCOPT &opfunc\_s*' ..
+        '$ENVVAR = ''ev''\_s*' ..
+        '\d\+ PUSHS "ev"\_s*' ..
+        '\d\+ STOREENV $ENVVAR\_s*' ..
         '@z = ''rv''.*' ..
-        ' STOREREG @z.*',
+        '\d\+ STOREREG @z.*',
         res)
 enddef
 
@@ -471,7 +477,6 @@ def Test_disassemble_list_assign_with_op()
         '\d\+ PUSHNR 4\_s*' ..
         '\d\+ PUSHNR 5\_s*' ..
         '\d\+ NEWLIST size 2\_s*' ..
-        '\d\+ CHECKLEN 2\_s*' ..
         '\d\+ LOAD $0\_s*' ..
         '\d\+ ITEM 0 with op\_s*' ..
         '\d\+ OPNR +\_s*' ..
@@ -1218,6 +1223,38 @@ def Test_disassemble_and_or()
         instr)
 enddef
 
+def AndConstant(arg: any): string
+  if true && arg
+    return "yes"
+  endif
+  if false && arg
+    return "never"
+  endif
+  return "no"
+enddef
+
+def Test_disassemble_and_constant()
+  assert_equal("yes", AndConstant(1))
+  assert_equal("no", AndConstant(false))
+  var instr = execute('disassemble AndConstant')
+  assert_match('AndConstant\_s*' ..
+      'if true && arg\_s*' ..
+      '0 LOAD arg\[-1\]\_s*' ..
+      '1 COND2BOOL\_s*' ..
+      '2 JUMP_IF_FALSE -> 5\_s*' ..
+      'return "yes"\_s*' ..
+      '3 PUSHS "yes"\_s*' ..
+      '4 RETURN\_s*' ..
+      'endif\_s*' ..
+      'if false && arg\_s*' ..
+      'return "never"\_s*' ..
+      'endif\_s*' ..
+      'return "no"\_s*' ..
+      '5 PUSHS "no"\_s*' ..
+      '6 RETURN',
+      instr)
+enddef
+
 def ForLoop(): list<number>
   var res: list<number>
   for i in range(3)
@@ -1734,25 +1771,31 @@ def Test_disassemble_invert_bool()
 enddef
 
 def ReturnBool(): bool
-  var name: bool = 1 && 0 || 1
+  var one = 1
+  var zero = 0
+  var name: bool = one && zero || one
   return name
 enddef
 
 def Test_disassemble_return_bool()
   var instr = execute('disassemble ReturnBool')
   assert_match('ReturnBool\_s*' ..
-        'var name: bool = 1 && 0 || 1\_s*' ..
-        '0 PUSHNR 1\_s*' ..
-        '1 COND2BOOL\_s*' ..
-        '2 JUMP_IF_COND_FALSE -> 5\_s*' ..
-        '3 PUSHNR 0\_s*' ..
-        '4 COND2BOOL\_s*' ..
-        '5 JUMP_IF_COND_TRUE -> 8\_s*' ..
-        '6 PUSHNR 1\_s*' ..
-        '7 COND2BOOL\_s*' ..
-        '\d STORE $0\_s*' ..
+        'var one = 1\_s*' ..
+        '0 STORE 1 in $0\_s*' ..
+        'var zero = 0\_s*' ..
+        '1 STORE 0 in $1\_s*' ..
+        'var name: bool = one && zero || one\_s*' ..
+        '2 LOAD $0\_s*' ..
+        '3 COND2BOOL\_s*' ..
+        '4 JUMP_IF_COND_FALSE -> 7\_s*' ..
+        '5 LOAD $1\_s*' ..
+        '6 COND2BOOL\_s*' ..
+        '7 JUMP_IF_COND_TRUE -> 10\_s*' ..
+        '8 LOAD $0\_s*' ..
+        '9 COND2BOOL\_s*' ..
+        '10 STORE $2\_s*' ..
         'return name\_s*' ..
-        '\d\+ LOAD $0\_s*' ..   
+        '\d\+ LOAD $2\_s*' ..   
         '\d\+ RETURN',
         instr)
   assert_equal(true, InvertBool())
@@ -1957,6 +2000,25 @@ def Test_disassemble_execute()
         '\d\+ LOAD $1\_s*' ..
         '\d\+ CONCAT\_s*' ..
         '\d\+ EXECUTE 1\_s*' ..
+        '\d\+ RETURN void',
+        res)
+enddef
+
+def s:OnlyRange()
+  :$
+  :123
+  :'m
+enddef
+
+def Test_disassemble_range_only()
+  var res = execute('disass s:OnlyRange')
+  assert_match('\<SNR>\d*_OnlyRange\_s*' ..
+        ':$\_s*' ..
+        '\d EXECRANGE $\_s*' ..
+        ':123\_s*' ..
+        '\d EXECRANGE 123\_s*' ..
+        ':''m\_s*' ..
+        '\d EXECRANGE ''m\_s*' ..
         '\d\+ RETURN void',
         res)
 enddef
@@ -2258,6 +2320,54 @@ def Test_debugged()
         res)
 enddef
 
+def s:ElseifConstant()
+  if g:value
+    echo "one"
+  elseif true
+    echo "true"
+  elseif false
+    echo "false"
+  endif
+  if 0
+    echo "yes"
+  elseif 0
+    echo "no"
+  endif
+enddef
+
+def Test_debug_elseif_constant()
+  var res = execute('disass debug s:ElseifConstant')
+  assert_match('<SNR>\d*_ElseifConstant\_s*' ..
+          'if g:value\_s*' ..
+          '0 DEBUG line 1-1 varcount 0\_s*' ..
+          '1 LOADG g:value\_s*' ..
+          '2 COND2BOOL\_s*' ..
+          '3 JUMP_IF_FALSE -> 8\_s*' ..
+          'echo "one"\_s*' ..
+          '4 DEBUG line 2-2 varcount 0\_s*' ..
+          '5 PUSHS "one"\_s*' ..
+          '6 ECHO 1\_s*' ..
+          'elseif true\_s*' ..
+          '7 JUMP -> 12\_s*' ..
+          '8 DEBUG line 3-3 varcount 0\_s*' ..
+          'echo "true"\_s*' ..
+          '9 DEBUG line 4-4 varcount 0\_s*' ..
+          '10 PUSHS "true"\_s*' ..
+          '11 ECHO 1\_s*' ..
+          'elseif false\_s*' ..
+          'echo "false"\_s*' ..
+          'endif\_s*' ..
+          'if 0\_s*' ..
+          '12 DEBUG line 8-8 varcount 0\_s*' ..
+          'echo "yes"\_s*' ..
+          'elseif 0\_s*' ..
+          '13 DEBUG line 11-10 varcount 0\_s*' ..
+          'echo "no"\_s*' ..
+          'endif\_s*' ..
+          '14 RETURN void*',
+        res)
+enddef
+
 def s:DebugElseif()
   var b = false
   if b
@@ -2319,7 +2429,7 @@ def Test_disassemble_dict_stack()
   assert_match('<SNR>\d*_UseMember\_s*' ..
           'var d = {func: Legacy}\_s*' ..
           '\d PUSHS "func"\_s*' ..
-          '\d PUSHFUNC "Legacy"\_s*' ..
+          '\d PUSHFUNC "g:Legacy"\_s*' ..
           '\d NEWDICT size 1\_s*' ..
           '\d STORE $0\_s*' ..
 

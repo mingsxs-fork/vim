@@ -99,6 +99,7 @@ struct terminal_S {
     int		tl_vterm_size_changed;
 
     int		tl_normal_mode; // TRUE: Terminal-Normal mode
+    int		tl_channel_closing;
     int		tl_channel_closed;
     int		tl_channel_recently_closed; // still need to handle tl_finish
 
@@ -203,10 +204,6 @@ static void handle_postponed_scrollback(term_T *term);
 // The character that we know (or assume) that the terminal expects for the
 // backspace key.
 static int term_backspace_char = BS;
-
-// "Terminal" highlight group colors.
-static int term_default_cterm_fg = -1;
-static int term_default_cterm_bg = -1;
 
 // Store the last set and the desired cursor properties, so that we only update
 // them when needed.  Doing it unnecessary may result in flicker.
@@ -671,7 +668,7 @@ term_start(
 
 	    if (s == NULL)
 		break;
-	    p = vim_strsave_fnameescape(s, FALSE);
+	    p = vim_strsave_fnameescape(s, VSE_NONE);
 	    if (p == NULL)
 		break;
 	    ga_concat(&ga, p);
@@ -741,6 +738,23 @@ term_start(
 	    curbuf = old_curbuf;
 	    curwin->w_buffer = curbuf;
 	    ++curbuf->b_nwindows;
+	}
+	else if (vgetc_busy
+#ifdef FEAT_TIMERS
+		|| timer_busy
+#endif
+		|| input_busy)
+	{
+	    char_u ignore[4];
+
+	    // When waiting for input need to return and possibly end up in
+	    // terminal_loop() instead.
+	    ignore[0] = K_SPECIAL;
+	    ignore[1] = KS_EXTRA;
+	    ignore[2] = KE_IGNORE;
+	    ignore[3] = NUL;
+	    ins_typebuf(ignore, REMAP_NONE, 0, TRUE, FALSE);
+	    typebuf_was_filled = TRUE;
 	}
     }
     else
@@ -1131,26 +1145,48 @@ get_tty_part(term_T *term UNUSED)
 }
 
 /*
+ * Read any vterm output and send it on the channel.
+ */
+    static void
+term_forward_output(term_T *term)
+{
+    VTerm *vterm = term->tl_vterm;
+    char   buf[KEY_BUF_LEN];
+    size_t curlen = vterm_output_read(vterm, buf, KEY_BUF_LEN);
+
+    if (curlen > 0)
+	channel_send(term->tl_job->jv_channel, get_tty_part(term),
+					     (char_u *)buf, (int)curlen, NULL);
+}
+
+/*
  * Write job output "msg[len]" to the vterm.
  */
     static void
-term_write_job_output(term_T *term, char_u *msg, size_t len)
+term_write_job_output(term_T *term, char_u *msg_arg, size_t len_arg)
 {
+    char_u	*msg = msg_arg;
+    size_t	len = len_arg;
     VTerm	*vterm = term->tl_vterm;
     size_t	prevlen = vterm_output_get_buffer_current(vterm);
+    size_t	limit = term->tl_buffer->b_p_twsl * term->tl_cols * 3;
+
+    // Limit the length to 'termwinscroll' * cols * 3 bytes.  Keep the text at
+    // the end.
+    if (len > limit)
+    {
+	char_u *p = msg + len - limit;
+
+	p -= (*mb_head_off)(msg, p);
+	len -= p - msg;
+	msg = p;
+    }
 
     vterm_input_write(vterm, (char *)msg, len);
 
     // flush vterm buffer when vterm responded to control sequence
     if (prevlen != vterm_output_get_buffer_current(vterm))
-    {
-	char   buf[KEY_BUF_LEN];
-	size_t curlen = vterm_output_read(vterm, buf, KEY_BUF_LEN);
-
-	if (curlen > 0)
-	    channel_send(term->tl_job->jv_channel, get_tty_part(term),
-					     (char_u *)buf, (int)curlen, NULL);
-    }
+	term_forward_output(term);
 
     // this invokes the damage callbacks
     vterm_screen_flush_damage(vterm_obtain_screen(vterm));
@@ -1239,7 +1275,7 @@ write_to_term(buf_T *buffer, char_u *msg, channel_T *channel)
 		update_cursor(curbuf->b_term, TRUE);
 	}
 	else
-	    redraw_after_callback(TRUE);
+	    redraw_after_callback(TRUE, FALSE);
     }
 }
 
@@ -1999,6 +2035,7 @@ term_check_timers(int next_due_arg, proftime_T *now)
 set_terminal_mode(term_T *term, int normal_mode)
 {
     term->tl_normal_mode = normal_mode;
+    trigger_modechanged();
     if (!normal_mode)
 	handle_postponed_scrollback(term);
     VIM_CLEAR(term->tl_status_text);
@@ -2081,15 +2118,15 @@ term_enter_job_mode()
 /*
  * Get a key from the user with terminal mode mappings.
  * Note: while waiting a terminal may be closed and freed if the channel is
- * closed and ++close was used.
+ * closed and ++close was used.  This may even happen before we get here.
  */
     static int
 term_vgetc()
 {
     int c;
     int save_State = State;
-    int modify_other_keys =
-			  vterm_is_modify_other_keys(curbuf->b_term->tl_vterm);
+    int modify_other_keys = curbuf->b_term->tl_vterm == NULL ? FALSE
+			: vterm_is_modify_other_keys(curbuf->b_term->tl_vterm);
 
     State = TERMINAL;
     got_int = FALSE;
@@ -2308,14 +2345,21 @@ terminal_is_active()
 }
 
 /*
- * Return the highight group name for the terminal; "Terminal" if not set.
+ * Return the highight group ID for the terminal and the window.
  */
-    static char_u *
-term_get_highlight_name(term_T *term)
+    static int
+term_get_highlight_id(term_T *term, win_T *wp)
 {
-    if (term->tl_highlight_name == NULL)
-	return (char_u *)"Terminal";
-    return term->tl_highlight_name;
+    char_u *name;
+
+    if (wp != NULL && *wp->w_p_wcr != NUL)
+	name = wp->w_p_wcr;
+    else if (term->tl_highlight_name != NULL)
+	name = term->tl_highlight_name;
+    else
+	name = (char_u*)"Terminal";
+
+    return syn_name2id(name);
 }
 
 #if defined(FEAT_GUI) || defined(PROTO)
@@ -2325,7 +2369,8 @@ term_get_cursor_shape(guicolor_T *fg, guicolor_T *bg)
     term_T		 *term = in_terminal_loop;
     static cursorentry_T entry;
     int			 id;
-    guicolor_T		term_fg, term_bg;
+    guicolor_T		 term_fg = INVALCOLOR;
+    guicolor_T		 term_bg = INVALCOLOR;
 
     CLEAR_FIELD(entry);
     entry.shape = entry.mshape =
@@ -2341,18 +2386,17 @@ term_get_cursor_shape(guicolor_T *fg, guicolor_T *bg)
     }
 
     // The highlight group overrules the defaults.
-    id = syn_name2id(term_get_highlight_name(term));
+    id = term_get_highlight_id(term, curwin);
     if (id != 0)
-    {
 	syn_id2colors(id, &term_fg, &term_bg);
+    if (term_bg != INVALCOLOR)
 	*fg = term_bg;
-    }
     else
 	*fg = gui.back_pixel;
 
     if (term->tl_cursor_color == NULL)
     {
-	if (id != 0)
+	if (term_fg != INVALCOLOR)
 	    *bg = term_fg;
 	else
 	    *bg = gui.norm_pixel;
@@ -2468,6 +2512,23 @@ term_win_entered()
 	mouse_was_outside = FALSE;
 	enter_mouse_col = mouse_col;
 	enter_mouse_row = mouse_row;
+    }
+}
+
+    void
+term_focus_change(int in_focus)
+{
+    term_T *term = curbuf->b_term;
+
+    if (term != NULL && term->tl_vterm != NULL)
+    {
+	VTermState	*state = vterm_obtain_state(term->tl_vterm);
+
+	if (in_focus)
+	    vterm_state_focus_in(state);
+	else
+	    vterm_state_focus_out(state);
+	term_forward_output(term);
     }
 }
 
@@ -2722,48 +2783,6 @@ may_toggle_cursor(term_T *term)
 }
 
 /*
- * Cache "Terminal" highlight group colors.
- */
-    void
-set_terminal_default_colors(int cterm_fg, int cterm_bg)
-{
-    term_default_cterm_fg = cterm_fg - 1;
-    term_default_cterm_bg = cterm_bg - 1;
-}
-
-    static int
-get_default_cterm_fg(term_T *term)
-{
-    if (term->tl_highlight_name != NULL)
-    {
-	int id = syn_name2id(term->tl_highlight_name);
-	int fg = -1;
-	int bg = -1;
-
-	if (id > 0)
-	    syn_id2cterm_bg(id, &fg, &bg);
-	return fg;
-    }
-    return term_default_cterm_fg;
-}
-
-    static int
-get_default_cterm_bg(term_T *term)
-{
-    if (term->tl_highlight_name != NULL)
-    {
-	int id = syn_name2id(term->tl_highlight_name);
-	int fg = -1;
-	int bg = -1;
-
-	if (id > 0)
-	    syn_id2cterm_bg(id, &fg, &bg);
-	return bg;
-    }
-    return term_default_cterm_bg;
-}
-
-/*
  * Reverse engineer the RGB value into a cterm color index.
  * First color is 1.  Return 0 if no match found (default color).
  */
@@ -2774,8 +2793,7 @@ color2index(VTermColor *color, int fg, int *boldp)
     int blue = color->blue;
     int green = color->green;
 
-    if (VTERM_COLOR_IS_DEFAULT_FG(color)
-	    || VTERM_COLOR_IS_DEFAULT_BG(color))
+    if (VTERM_COLOR_IS_INVALID(color))
 	return 0;
     if (VTERM_COLOR_IS_INDEXED(color))
     {
@@ -2846,19 +2864,19 @@ color2index(VTermColor *color, int fg, int *boldp)
  * Convert Vterm attributes to highlight flags.
  */
     static int
-vtermAttr2hl(VTermScreenCellAttrs cellattrs)
+vtermAttr2hl(VTermScreenCellAttrs *cellattrs)
 {
     int attr = 0;
 
-    if (cellattrs.bold)
+    if (cellattrs->bold)
 	attr |= HL_BOLD;
-    if (cellattrs.underline)
+    if (cellattrs->underline)
 	attr |= HL_UNDERLINE;
-    if (cellattrs.italic)
+    if (cellattrs->italic)
 	attr |= HL_ITALIC;
-    if (cellattrs.strike)
+    if (cellattrs->strike)
 	attr |= HL_STRIKETHROUGH;
-    if (cellattrs.reverse)
+    if (cellattrs->reverse)
 	attr |= HL_INVERSE;
     return attr;
 }
@@ -2889,85 +2907,66 @@ hl2vtermAttr(int attr, cellattr_T *cell)
 cell2attr(
 	term_T			*term,
 	win_T			*wp,
-	VTermScreenCellAttrs	cellattrs,
-	VTermColor		cellfg,
-	VTermColor		cellbg)
+	VTermScreenCellAttrs	*cellattrs,
+	VTermColor		*cellfg,
+	VTermColor		*cellbg)
 {
     int attr = vtermAttr2hl(cellattrs);
+    VTermColor *fg = cellfg;
+    VTermColor *bg = cellbg;
+    int is_default_fg = VTERM_COLOR_IS_DEFAULT_FG(fg);
+    int is_default_bg = VTERM_COLOR_IS_DEFAULT_BG(bg);
+
+    if (is_default_fg || is_default_bg)
+    {
+	if (wp != NULL && *wp->w_p_wcr != NUL)
+	{
+	    if (is_default_fg)
+		fg = &wp->w_term_wincolor.fg;
+	    if (is_default_bg)
+		bg = &wp->w_term_wincolor.bg;
+	}
+	else
+	{
+	    if (is_default_fg)
+		fg = &term->tl_default_color.fg;
+	    if (is_default_bg)
+		bg = &term->tl_default_color.bg;
+	}
+    }
 
 #ifdef FEAT_GUI
     if (gui.in_use)
     {
-	guicolor_T fg, bg;
-
-	fg = gui_mch_get_rgb_color(cellfg.red, cellfg.green, cellfg.blue);
-	bg = gui_mch_get_rgb_color(cellbg.red, cellbg.green, cellbg.blue);
-	return get_gui_attr_idx(attr, fg, bg);
+	guicolor_T guifg = gui_mch_get_rgb_color(fg->red, fg->green, fg->blue);
+	guicolor_T guibg = gui_mch_get_rgb_color(bg->red, bg->green, bg->blue);
+	return get_gui_attr_idx(attr, guifg, guibg);
     }
     else
 #endif
 #ifdef FEAT_TERMGUICOLORS
     if (p_tgc)
     {
-	guicolor_T fg, bg;
-
-	fg = gui_get_rgb_color_cmn(cellfg.red, cellfg.green, cellfg.blue);
-	bg = gui_get_rgb_color_cmn(cellbg.red, cellbg.green, cellbg.blue);
-
-	return get_tgc_attr_idx(attr, fg, bg);
+	guicolor_T tgcfg = VTERM_COLOR_IS_INVALID(fg)
+	    ? INVALCOLOR
+	    : gui_get_rgb_color_cmn(fg->red, fg->green, fg->blue);
+	guicolor_T tgcbg = VTERM_COLOR_IS_INVALID(bg)
+	    ? INVALCOLOR
+	    : gui_get_rgb_color_cmn(bg->red, bg->green, bg->blue);
+	return get_tgc_attr_idx(attr, tgcfg, tgcbg);
     }
     else
 #endif
     {
 	int bold = MAYBE;
-	int fg = color2index(&cellfg, TRUE, &bold);
-	int bg = color2index(&cellbg, FALSE, &bold);
-
-	// Use the 'wincolor' or "Terminal" highlighting for the default
-	// colors.
-	if ((fg == 0 || bg == 0) && t_colors >= 16)
-	{
-	    int wincolor_fg = -1;
-	    int wincolor_bg = -1;
-
-	    if (wp != NULL && *wp->w_p_wcr != NUL)
-	    {
-		int id = syn_name2id(curwin->w_p_wcr);
-
-		// Get the 'wincolor' group colors.
-		if (id > 0)
-		    syn_id2cterm_bg(id, &wincolor_fg, &wincolor_bg);
-	    }
-	    if (fg == 0)
-	    {
-		if (wincolor_fg >= 0)
-		    fg = wincolor_fg + 1;
-		else
-		{
-		    int cterm_fg = get_default_cterm_fg(term);
-
-		    if (cterm_fg >= 0)
-			fg = cterm_fg + 1;
-		}
-	    }
-	    if (bg == 0)
-	    {
-		if (wincolor_bg >= 0)
-		    bg = wincolor_bg + 1;
-		else
-		{
-		    int cterm_bg = get_default_cterm_bg(term);
-
-		    if (cterm_bg >= 0)
-			bg = cterm_bg + 1;
-		}
-	    }
-	}
+	int ctermfg = color2index(fg, TRUE, &bold);
+	int ctermbg = color2index(bg, FALSE, &bold);
 
 	// with 8 colors set the bold attribute to get a bright foreground
 	if (bold == TRUE)
 	    attr |= HL_BOLD;
-	return get_cterm_attr_idx(attr, fg, bg);
+
+	return get_cterm_attr_idx(attr, ctermfg, ctermbg);
     }
     return 0;
 }
@@ -3016,7 +3015,7 @@ term_scroll_up(term_T *term, int start_row, int count)
 	    // Set the color to clear lines with.
 	    vterm_state_get_default_colors(vterm_obtain_state(term->tl_vterm),
 								     &fg, &bg);
-	    clear_attr = cell2attr(term, wp, attr, fg, bg);
+	    clear_attr = cell2attr(term, wp, &attr, &fg, &bg);
 	    win_del_lines(wp, start_row, count, FALSE, FALSE, clear_attr);
 	}
     }
@@ -3503,6 +3502,20 @@ may_close_term_popup(void)
 #endif
 
 /*
+ * Called when a channel is going to be closed, before invoking the close
+ * callback.
+ */
+    void
+term_channel_closing(channel_T *ch)
+{
+    term_T *term;
+
+    for (term = first_term; term != NULL; term = term->tl_next)
+	if (term->tl_job == ch->ch_job && !term->tl_channel_closed)
+	    term->tl_channel_closing = TRUE;
+}
+
+/*
  * Called when a channel has been closed.
  * If this was a channel for a terminal window then finish it up.
  */
@@ -3661,7 +3674,8 @@ term_line2screenline(
 		// This will only store the lower byte of "c".
 		ScreenLines[off] = c;
 	}
-	ScreenAttrs[off] = cell2attr(term, wp, cell.attrs, cell.fg, cell.bg);
+	ScreenAttrs[off] = cell2attr(term, wp, &cell.attrs, &cell.fg,
+								     &cell.bg);
 
 	++pos->col;
 	++off;
@@ -3853,8 +3867,22 @@ term_update_window(win_T *wp)
 #endif
 				0);
     }
-    term->tl_dirty_row_start = MAX_ROW;
-    term->tl_dirty_row_end = 0;
+}
+
+/*
+ * Called after updating all windows: may reset dirty rows.
+ */
+    void
+term_did_update_window(win_T *wp)
+{
+    term_T	*term = wp->w_buffer->b_term;
+
+    if (term != NULL && term->tl_vterm != NULL && !term->tl_normal_mode
+						       && wp->w_redr_type == 0)
+    {
+	term->tl_dirty_row_start = MAX_ROW;
+	term->tl_dirty_row_end = 0;
+    }
 }
 
 /*
@@ -3921,7 +3949,7 @@ term_get_attr(win_T *wp, linenr_T lnum, int col)
 	else
 	    cellattr = line->sb_cells + col;
     }
-    return cell2attr(term, wp, cellattr->attrs, cellattr->fg, cellattr->bg);
+    return cell2attr(term, wp, &cellattr->attrs, &cellattr->fg, &cellattr->bg);
 }
 
 /*
@@ -3942,10 +3970,131 @@ cterm_color2vterm(int nr, VTermColor *rgb)
 }
 
 /*
+ * Initialize vterm color from the synID.
+ * Returns TRUE if color is set to "fg" and "bg".
+ * Otherwise returns FALSE.
+ */
+    static int
+get_vterm_color_from_synid(int id, VTermColor *fg, VTermColor *bg)
+{
+#if defined(FEAT_GUI) || defined(FEAT_TERMGUICOLORS)
+    // Use the actual color for the GUI and when 'termguicolors' is set.
+    if (0
+# ifdef FEAT_GUI
+	    || gui.in_use
+# endif
+# ifdef FEAT_TERMGUICOLORS
+	    || p_tgc
+#  ifdef FEAT_VTP
+	    // Finally get INVALCOLOR on this execution path
+	    || (!p_tgc && t_colors >= 256)
+#  endif
+# endif
+       )
+    {
+	guicolor_T fg_rgb = INVALCOLOR;
+	guicolor_T bg_rgb = INVALCOLOR;
+
+	if (id > 0)
+	    syn_id2colors(id, &fg_rgb, &bg_rgb);
+
+	if (fg_rgb != INVALCOLOR)
+	{
+	    long_u rgb = GUI_MCH_GET_RGB(fg_rgb);
+	    fg->red = (unsigned)(rgb >> 16);
+	    fg->green = (unsigned)(rgb >> 8) & 255;
+	    fg->blue = (unsigned)rgb & 255;
+	    fg->type = VTERM_COLOR_RGB | VTERM_COLOR_DEFAULT_FG;
+	}
+	else
+	    fg->type = VTERM_COLOR_INVALID | VTERM_COLOR_DEFAULT_FG;
+
+	if (bg_rgb != INVALCOLOR)
+	{
+	    long_u rgb = GUI_MCH_GET_RGB(bg_rgb);
+	    bg->red = (unsigned)(rgb >> 16);
+	    bg->green = (unsigned)(rgb >> 8) & 255;
+	    bg->blue = (unsigned)rgb & 255;
+	    bg->type = VTERM_COLOR_RGB | VTERM_COLOR_DEFAULT_BG;
+	}
+	else
+	    bg->type = VTERM_COLOR_INVALID | VTERM_COLOR_DEFAULT_BG;
+
+	return TRUE;
+    }
+    else
+#endif
+    if (t_colors >= 16)
+    {
+	int cterm_fg = -1;
+	int cterm_bg = -1;
+
+	if (id > 0)
+	    syn_id2cterm_bg(id, &cterm_fg, &cterm_bg);
+
+	if (cterm_fg >= 0)
+	{
+	    cterm_color2vterm(cterm_fg, fg);
+	    fg->type |= VTERM_COLOR_DEFAULT_FG;
+	}
+	else
+	    fg->type = VTERM_COLOR_INVALID | VTERM_COLOR_DEFAULT_FG;
+
+	if (cterm_bg >= 0)
+	{
+	    cterm_color2vterm(cterm_bg, bg);
+	    bg->type |= VTERM_COLOR_DEFAULT_BG;
+	}
+	else
+	    bg->type = VTERM_COLOR_INVALID | VTERM_COLOR_DEFAULT_BG;
+
+	return TRUE;
+    }
+
+    return FALSE;
+}
+
+    void
+term_reset_wincolor(win_T *wp)
+{
+    wp->w_term_wincolor.fg.type = VTERM_COLOR_INVALID | VTERM_COLOR_DEFAULT_FG;
+    wp->w_term_wincolor.bg.type = VTERM_COLOR_INVALID | VTERM_COLOR_DEFAULT_BG;
+}
+
+/*
+ * Cache the color of 'wincolor'.
+ */
+    void
+term_update_wincolor(win_T *wp)
+{
+    int id = 0;
+
+    if (*wp->w_p_wcr != NUL)
+	id = syn_name2id(wp->w_p_wcr);
+    if (id == 0 || !get_vterm_color_from_synid(id, &wp->w_term_wincolor.fg,
+						      &wp->w_term_wincolor.bg))
+	term_reset_wincolor(wp);
+}
+
+/*
+ * Called when option 'termguicolors' was set,
+ * or when any highlight is changed.
+ */
+    void
+term_update_wincolor_all()
+{
+    win_T	 *wp = NULL;
+    int		 did_curwin = FALSE;
+
+    while (for_all_windows_and_curwin(&wp, &did_curwin))
+	term_update_wincolor(wp);
+}
+
+/*
  * Initialize term->tl_default_color from the environment.
  */
     static void
-init_default_colors(term_T *term, win_T *wp)
+init_default_colors(term_T *term)
 {
     VTermColor	    *fg, *bg;
     int		    fgval, bgval;
@@ -3973,83 +4122,10 @@ init_default_colors(term_T *term, win_T *wp)
     fg->type = VTERM_COLOR_RGB | VTERM_COLOR_DEFAULT_FG;
     bg->type = VTERM_COLOR_RGB | VTERM_COLOR_DEFAULT_BG;
 
-    // The 'wincolor' or the highlight group overrules the defaults.
-    if (wp != NULL && *wp->w_p_wcr != NUL)
-	id = syn_name2id(wp->w_p_wcr);
-    else
-	id = syn_name2id(term_get_highlight_name(term));
+    // The highlight group overrules the defaults.
+    id = term_get_highlight_id(term, NULL);
 
-    // Use the actual color for the GUI and when 'termguicolors' is set.
-#if defined(FEAT_GUI) || defined(FEAT_TERMGUICOLORS)
-    if (0
-# ifdef FEAT_GUI
-	    || gui.in_use
-# endif
-# ifdef FEAT_TERMGUICOLORS
-	    || p_tgc
-#  ifdef FEAT_VTP
-	    // Finally get INVALCOLOR on this execution path
-	    || (!p_tgc && t_colors >= 256)
-#  endif
-# endif
-       )
-    {
-	guicolor_T	fg_rgb = INVALCOLOR;
-	guicolor_T	bg_rgb = INVALCOLOR;
-
-	if (id != 0)
-	    syn_id2colors(id, &fg_rgb, &bg_rgb);
-
-# ifdef FEAT_GUI
-	if (gui.in_use)
-	{
-	    if (fg_rgb == INVALCOLOR)
-		fg_rgb = gui.norm_pixel;
-	    if (bg_rgb == INVALCOLOR)
-		bg_rgb = gui.back_pixel;
-	}
-#  ifdef FEAT_TERMGUICOLORS
-	else
-#  endif
-# endif
-# ifdef FEAT_TERMGUICOLORS
-	{
-	    if (fg_rgb == INVALCOLOR)
-		fg_rgb = cterm_normal_fg_gui_color;
-	    if (bg_rgb == INVALCOLOR)
-		bg_rgb = cterm_normal_bg_gui_color;
-	}
-# endif
-	if (fg_rgb != INVALCOLOR)
-	{
-	    long_u rgb = GUI_MCH_GET_RGB(fg_rgb);
-
-	    fg->red = (unsigned)(rgb >> 16);
-	    fg->green = (unsigned)(rgb >> 8) & 255;
-	    fg->blue = (unsigned)rgb & 255;
-	}
-	if (bg_rgb != INVALCOLOR)
-	{
-	    long_u rgb = GUI_MCH_GET_RGB(bg_rgb);
-
-	    bg->red = (unsigned)(rgb >> 16);
-	    bg->green = (unsigned)(rgb >> 8) & 255;
-	    bg->blue = (unsigned)rgb & 255;
-	}
-    }
-    else
-#endif
-    if (id != 0 && t_colors >= 16)
-    {
-	int cterm_fg = get_default_cterm_fg(term);
-	int cterm_bg = get_default_cterm_bg(term);
-
-	if (cterm_fg >= 0)
-	    cterm_color2vterm(cterm_fg, fg);
-	if (cterm_bg >= 0)
-	    cterm_color2vterm(cterm_bg, bg);
-    }
-    else
+    if (!get_vterm_color_from_synid(id, fg, bg))
     {
 #if defined(MSWIN) && (!defined(FEAT_GUI_MSWIN) || defined(VIMDLL))
 	int tmp;
@@ -4110,6 +4186,7 @@ set_vterm_palette(VTerm *vterm, long_u *rgb)
     {
 	VTermColor	color;
 
+	color.type = VTERM_COLOR_RGB;
 	color.red = (unsigned)(rgb[index] >> 16);
 	color.green = (unsigned)(rgb[index] >> 8) & 255;
 	color.blue = (unsigned)rgb[index] & 255;
@@ -4288,9 +4365,9 @@ handle_call_command(term_T *term, channel_T *channel, listitem_T *item)
     argvars[0].vval.v_number = term->tl_buffer->b_fnum;
     argvars[1] = item->li_next->li_tv;
     CLEAR_FIELD(funcexe);
-    funcexe.firstline = 1L;
-    funcexe.lastline = 1L;
-    funcexe.evaluate = TRUE;
+    funcexe.fe_firstline = 1L;
+    funcexe.fe_lastline = 1L;
+    funcexe.fe_evaluate = TRUE;
     if (call_func(func, -1, &rettv, 2, argvars, &funcexe) == OK)
     {
 	clear_tv(&rettv);
@@ -4505,7 +4582,10 @@ static VTermStateFallbacks state_fallbacks = {
   NULL,		// control
   parse_csi,	// csi
   parse_osc,	// osc
-  NULL		// dcs
+  NULL,		// dcs
+  NULL,		// apc
+  NULL,		// pm
+  NULL		// sos
 };
 
 /*
@@ -4514,7 +4594,8 @@ static VTermStateFallbacks state_fallbacks = {
     static void *
 vterm_malloc(size_t size, void *data UNUSED)
 {
-    return alloc_clear(size);
+    // make sure that the length is not zero
+    return alloc_clear(size == 0 ? 1L : size);
 }
 
     static void
@@ -4558,7 +4639,7 @@ create_vterm(term_T *term, int rows, int cols)
     // TODO: depends on 'encoding'.
     vterm_set_utf8(vterm, 1);
 
-    init_default_colors(term, NULL);
+    init_default_colors(term);
 
     vterm_state_set_default_colors(
 	    state,
@@ -4594,36 +4675,24 @@ create_vterm(term_T *term, int rows, int cols)
 }
 
 /*
- * Called when 'wincolor' was set.
- */
-    void
-term_update_colors(term_T *term)
-{
-    win_T *wp;
-
-    if (term->tl_vterm == NULL)
-	return;
-    init_default_colors(term, curwin);
-    vterm_state_set_default_colors(
-	    vterm_obtain_state(term->tl_vterm),
-	    &term->tl_default_color.fg,
-	    &term->tl_default_color.bg);
-
-    FOR_ALL_WINDOWS(wp)
-	if (wp->w_buffer == term->tl_buffer)
-	    redraw_win_later(wp, NOT_VALID);
-}
-
-/*
- * Called when 'background' was set.
+ * Called when option 'background' or 'termguicolors' was set,
+ * or when any highlight is changed.
  */
     void
 term_update_colors_all(void)
 {
-    term_T *tp;
+    term_T *term;
 
-    FOR_ALL_TERMS(tp)
-	term_update_colors(tp);
+    FOR_ALL_TERMS(term)
+    {
+	if (term->tl_vterm == NULL)
+	    continue;
+	init_default_colors(term);
+	vterm_state_set_default_colors(
+		vterm_obtain_state(term->tl_vterm),
+		&term->tl_default_color.fg,
+		&term->tl_default_color.bg);
+    }
 }
 
 /*
@@ -4661,6 +4730,15 @@ term_get_status_text(term_T *term)
 								   fname, txt);
     }
     return term->tl_status_text;
+}
+
+/*
+ * Clear the cached value of the status text.
+ */
+    void
+term_clear_status_text(term_T *term)
+{
+    VIM_CLEAR(term->tl_status_text);
 }
 
 /*
@@ -4709,8 +4787,8 @@ term_get_buf(typval_T *argvars, char *where)
 clear_cell(VTermScreenCell *cell)
 {
     CLEAR_FIELD(*cell);
-    cell->fg.type = VTERM_COLOR_DEFAULT_FG;
-    cell->bg.type = VTERM_COLOR_DEFAULT_BG;
+    cell->fg.type = VTERM_COLOR_INVALID | VTERM_COLOR_DEFAULT_FG;
+    cell->bg.type = VTERM_COLOR_INVALID | VTERM_COLOR_DEFAULT_BG;
 }
 
     static void
@@ -4861,8 +4939,8 @@ f_term_dumpwrite(typval_T *argvars, typval_T *rettv UNUSED)
 		if (should_break)
 		    break;
 	    }
-	    same_attr = vtermAttr2hl(cell.attrs)
-					       == vtermAttr2hl(prev_cell.attrs)
+	    same_attr = vtermAttr2hl(&cell.attrs)
+					      == vtermAttr2hl(&prev_cell.attrs)
 			&& vterm_color_is_equal(&cell.fg, &prev_cell.fg)
 			&& vterm_color_is_equal(&cell.bg, &prev_cell.bg);
 	    if (same_chars && cell.width == prev_cell.width && same_attr
@@ -4910,7 +4988,7 @@ f_term_dumpwrite(typval_T *argvars, typval_T *rettv UNUSED)
 		    }
 		    else
 		    {
-			fprintf(fd, "%d", vtermAttr2hl(cell.attrs));
+			fprintf(fd, "%d", vtermAttr2hl(&cell.attrs));
 			if (vterm_color_is_equal(&cell.fg, &prev_cell.fg))
 			    fputs("&", fd);
 			else
@@ -5361,7 +5439,7 @@ term_load_dump(typval_T *argvars, typval_T *rettv, int do_diff)
 	VTermPos	cursor_pos1;
 	VTermPos	cursor_pos2;
 
-	init_default_colors(term, NULL);
+	init_default_colors(term);
 
 	rettv->vval.v_number = buf->b_fnum;
 
@@ -5471,8 +5549,8 @@ term_load_dump(typval_T *argvars, typval_T *rettv, int do_diff)
 			else if (!vterm_color_is_equal(&(cellattr1 + col)->bg,
 						   &(cellattr2 + col)->bg))
 			    textline[col] = 'b';
-			else if (vtermAttr2hl((cellattr1 + col)->attrs)
-				   != vtermAttr2hl(((cellattr2 + col)->attrs)))
+			else if (vtermAttr2hl(&(cellattr1 + col)->attrs)
+				  != vtermAttr2hl(&((cellattr2 + col)->attrs)))
 			    textline[col] = 'a';
 		    }
 		    p1 += len1;
@@ -6151,7 +6229,8 @@ f_term_scrape(typval_T *argvars, typval_T *rettv)
 				     bg.red, bg.green, bg.blue);
 	dict_add_string(dcell, "bg", rgb);
 
-	dict_add_number(dcell, "attr", cell2attr(term, NULL, attrs, fg, bg));
+	dict_add_number(dcell, "attr",
+				      cell2attr(term, NULL, &attrs, &fg, &bg));
 	dict_add_number(dcell, "width", width);
 
 	++pos.col;
@@ -6433,6 +6512,9 @@ f_term_wait(typval_T *argvars, typval_T *rettv UNUSED)
 	    if (!buf_valid(buf))
 		// If the terminal is closed when the channel is closed the
 		// buffer disappears.
+		break;
+	    if (buf->b_term == NULL || buf->b_term->tl_channel_closing)
+		// came here from a close callback, only wait one time
 		break;
 	}
 

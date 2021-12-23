@@ -1737,6 +1737,9 @@ find_file_in_path_option(
 
     if (first == TRUE)
     {
+	if (len == 0)
+	    return NULL;
+
 	// copy file name into NameBuff, expanding environment variables
 	save_char = ptr[len];
 	ptr[len] = NUL;
@@ -2118,7 +2121,12 @@ find_file_name_in_path(
     int		c;
 # if defined(FEAT_FIND_ID) && defined(FEAT_EVAL)
     char_u	*tofree = NULL;
+# endif
 
+    if (len == 0)
+	return NULL;
+
+# if defined(FEAT_FIND_ID) && defined(FEAT_EVAL)
     if ((options & FNAME_INCL) && *curbuf->b_p_inex != NUL)
     {
 	tofree = eval_includeexpr(ptr, len);
@@ -2645,7 +2653,7 @@ simplify_filename(char_u *filename)
 
     p = filename;
 # ifdef BACKSLASH_IN_FILENAME
-    if (p[1] == ':')	    // skip "x:"
+    if (p[0] != NUL && p[1] == ':')	    // skip "x:"
 	p += 2;
 # endif
 

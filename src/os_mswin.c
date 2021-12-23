@@ -32,7 +32,7 @@
 #endif
 
 #ifndef PROTO
-# if defined(FEAT_TITLE) && !defined(FEAT_GUI_MSWIN)
+# if !defined(FEAT_GUI_MSWIN)
 #  include <shellapi.h>
 # endif
 
@@ -265,7 +265,6 @@ mch_input_isatty(void)
 #endif
 }
 
-#ifdef FEAT_TITLE
 /*
  * mch_settitle(): set titlebar of our window
  */
@@ -274,16 +273,16 @@ mch_settitle(
     char_u *title,
     char_u *icon UNUSED)
 {
-# ifdef FEAT_GUI_MSWIN
-#  ifdef VIMDLL
+#ifdef FEAT_GUI_MSWIN
+# ifdef VIMDLL
     if (gui.in_use)
-#  endif
+# endif
     {
 	gui_mch_settitle(title, icon);
 	return;
     }
-# endif
-# if !defined(FEAT_GUI_MSWIN) || defined(VIMDLL)
+#endif
+#if !defined(FEAT_GUI_MSWIN) || defined(VIMDLL)
     if (title != NULL)
     {
 	WCHAR	*wp = enc_to_utf16(title, NULL);
@@ -295,7 +294,7 @@ mch_settitle(
 	vim_free(wp);
 	return;
     }
-# endif
+#endif
 }
 
 
@@ -309,12 +308,12 @@ mch_settitle(
     void
 mch_restore_title(int which UNUSED)
 {
-# if !defined(FEAT_GUI_MSWIN) || defined(VIMDLL)
-#  ifdef VIMDLL
+#if !defined(FEAT_GUI_MSWIN) || defined(VIMDLL)
+# ifdef VIMDLL
     if (!gui.in_use)
-#  endif
-	SetConsoleTitle(g_szOrigTitle);
 # endif
+	SetConsoleTitle(g_szOrigTitle);
+#endif
 }
 
 
@@ -336,7 +335,6 @@ mch_can_restore_icon(void)
 {
     return FALSE;
 }
-#endif // FEAT_TITLE
 
 
 /*
@@ -391,6 +389,8 @@ mch_isFullName(char_u *fname)
     // Another way to check is to use mch_FullName() and see if the result is
     // the same as the name or mch_FullName() fails.  However, this has quite a
     // bit of overhead, so let's not do that.
+    if (*fname == NUL)
+	return TRUE;
     return ((ASCII_ISALPHA(fname[0]) && fname[1] == ':'
 				      && (fname[2] == '/' || fname[2] == '\\'))
 	    || (fname[0] == fname[1] && (fname[0] == '/' || fname[0] == '\\')));
@@ -937,9 +937,7 @@ Trace(
 #endif //_DEBUG
 
 #if !defined(FEAT_GUI) || defined(VIMDLL) || defined(PROTO)
-# ifdef FEAT_TITLE
 extern HWND g_hWnd;	// This is in os_win32.c.
-# endif
 
 /*
  * Showing the printer dialog is tricky since we have no GUI
@@ -953,14 +951,12 @@ GetConsoleHwnd(void)
     if (s_hwnd != 0)
 	return;
 
-# ifdef FEAT_TITLE
     // Window handle may have been found by init code (Windows NT only)
     if (g_hWnd != 0)
     {
 	s_hwnd = g_hWnd;
 	return;
     }
-# endif
 
     s_hwnd = GetConsoleWindow();
 }
@@ -2301,9 +2297,7 @@ serverSetName(char_u *name)
     {
 	// Remember the name
 	serverName = ok_name;
-# ifdef FEAT_TITLE
 	need_maketitle = TRUE;	// update Vim window title later
-# endif
 
 	// Update the message window title
 	SetWindowText(message_window, (LPCSTR)ok_name);

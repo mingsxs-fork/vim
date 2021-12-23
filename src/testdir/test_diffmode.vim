@@ -274,7 +274,7 @@ func Test_diffget_diffput_empty_buffer()
 endfunc
 
 " :diffput and :diffget completes names of buffers which
-" are in diff mode and which are different then current buffer.
+" are in diff mode and which are different than current buffer.
 " No completion when the current window is not in diff mode.
 func Test_diffget_diffput_completion()
   e            Xdiff1 | diffthis
@@ -677,7 +677,7 @@ func Test_diffexpr()
   call assert_notequal(normattr, screenattr(3, 1))
   diffoff!
 
-  " Try using an non-existing function for 'diffexpr'.
+  " Try using a non-existing function for 'diffexpr'.
   set diffexpr=NewDiffFunc()
   call assert_fails('windo diffthis', ['E117:', 'E97:'])
   diffoff!
@@ -845,6 +845,7 @@ func VerifyInternal(buf, dumpfile, extra)
 endfunc
 
 func Test_diff_screen()
+  let g:test_is_flaky = 1
   CheckScreendump
   CheckFeature menu
 
@@ -1011,6 +1012,9 @@ func Test_diff_with_scroll_and_change()
 
   call term_sendkeys(buf, "ax\<Esc>")
   call VerifyScreenDump(buf, 'Test_diff_scroll_change_02', {})
+
+  call term_sendkeys(buf, "\<C-W>lay\<Esc>")
+  call VerifyScreenDump(buf, 'Test_diff_scroll_change_03', {})
 
   " clean up
   call StopVimInTerminal(buf)

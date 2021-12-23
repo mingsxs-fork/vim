@@ -59,6 +59,7 @@
 #define P_NDNAME      0x8000000L // only normal dir name chars allowed
 #define P_RWINONLY   0x10000000L // only redraw current window
 #define P_MLE	     0x20000000L // under control of 'modelineexpr'
+#define P_FUNC	     0x40000000L // accept a function reference or a lambda
 
 // Returned by get_option_value().
 typedef enum {
@@ -404,6 +405,7 @@ EXTERN char_u	*p_cinw;	// 'cinwords'
 #ifdef FEAT_COMPL_FUNC
 EXTERN char_u	*p_cfu;		// 'completefunc'
 EXTERN char_u	*p_ofu;		// 'omnifunc'
+EXTERN char_u	*p_tsrfu;	// 'thesaurusfunc'
 #endif
 EXTERN int	p_ci;		// 'copyindent'
 #if defined(FEAT_GUI) && defined(MACOS_X)
@@ -483,6 +485,7 @@ EXTERN int	p_deco;		// 'delcombine'
 #ifdef FEAT_EVAL
 EXTERN char_u	*p_ccv;		// 'charconvert'
 #endif
+EXTERN int	p_cdh;		// 'cdhome'
 EXTERN char_u	*p_cino;	// 'cinoptions'
 #ifdef FEAT_CMDWIN
 EXTERN char_u	*p_cedit;	// 'cedit'
@@ -621,6 +624,9 @@ EXTERN char_u	*p_guifontset;	// 'guifontset'
 EXTERN char_u	*p_guifontwide;	// 'guifontwide'
 EXTERN int	p_guipty;	// 'guipty'
 #endif
+#ifdef FEAT_GUI_GTK
+EXTERN char_u	*p_guiligatures;  // 'guiligatures'
+# endif
 #if defined(FEAT_GUI_GTK) || defined(FEAT_GUI_X11)
 EXTERN long	p_ghr;		// 'guiheadroom'
 #endif
@@ -653,10 +659,8 @@ EXTERN int	p_hkmapp;	// 'hkmapp'
 EXTERN int	p_arshape;	// 'arabicshape'
 # endif
 #endif
-#ifdef FEAT_TITLE
 EXTERN int	p_icon;		// 'icon'
 EXTERN char_u	*p_iconstring;	// 'iconstring'
-#endif
 EXTERN int	p_ic;		// 'ignorecase'
 #if defined(FEAT_XIM) && defined(FEAT_GUI_GTK)
 EXTERN char_u	*p_imak;	// 'imactivatekey'
@@ -982,12 +986,10 @@ EXTERN long	p_tw;		// 'textwidth'
 EXTERN int	p_to;		// 'tildeop'
 EXTERN int	p_timeout;	// 'timeout'
 EXTERN long	p_tm;		// 'timeoutlen'
-#ifdef FEAT_TITLE
 EXTERN int	p_title;	// 'title'
 EXTERN long	p_titlelen;	// 'titlelen'
 EXTERN char_u	*p_titleold;	// 'titleold'
 EXTERN char_u	*p_titlestring;	// 'titlestring'
-#endif
 EXTERN char_u	*p_tsr;		// 'thesaurus'
 EXTERN int	p_ttimeout;	// 'ttimeout'
 EXTERN long	p_ttm;		// 'ttimeoutlen'
@@ -1093,6 +1095,7 @@ EXTERN int	p_write;	// 'write'
 EXTERN int	p_wa;		// 'writeany'
 EXTERN int	p_wb;		// 'writebackup'
 EXTERN long	p_wd;		// 'writedelay'
+EXTERN int	p_xtermcodes;	// 'xtermcodes'
 
 /*
  * "indir" values for buffer-local options.
@@ -1217,6 +1220,9 @@ enum
 #endif
     , BV_TAGS
     , BV_TC
+#ifdef FEAT_COMPL_FUNC
+    , BV_TSRFU
+#endif
     , BV_TS
     , BV_TW
     , BV_TX

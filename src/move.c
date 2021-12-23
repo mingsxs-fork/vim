@@ -199,7 +199,6 @@ update_topline(void)
 	check_cursor_lnum();
 	curwin->w_topline = curwin->w_cursor.lnum;
 	curwin->w_botline = curwin->w_topline;
-	curwin->w_valid |= VALID_BOTLINE|VALID_BOTLINE_AP;
 	curwin->w_scbind_pos = 1;
 	return;
     }
@@ -1028,7 +1027,7 @@ curs_columns(
 	    // column
 	    sbr = get_showbreak_value(curwin);
 	    if (*sbr && *ml_get_cursor() == NUL
-				    && curwin->w_wcol == (int)vim_strsize(sbr))
+				    && curwin->w_wcol == vim_strsize(sbr))
 		curwin->w_wcol = 0;
 #endif
 	}
@@ -2682,7 +2681,6 @@ get_scroll_overlap(lineoff_T *lp, int dir)
 	*lp = loff1;	// 1 line overlap
     else
 	*lp = loff2;	// 2 lines overlap
-    return;
 }
 
 /*

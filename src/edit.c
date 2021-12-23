@@ -598,9 +598,14 @@ edit(
 	    {
 		c = safe_vgetc();
 
-		if (stop_insert_mode)
+		if (stop_insert_mode
+#ifdef FEAT_TERMINAL
+			|| (c == K_IGNORE && term_use_loop())
+#endif
+		   )
 		{
-		    // Insert mode ended, possibly from a callback.
+		    // Insert mode ended, possibly from a callback, or a timer
+		    // must have opened a terminal window.
 		    if (c != K_IGNORE && c != K_NOP)
 			vungetc(c);
 		    count = 0;
@@ -617,6 +622,11 @@ edit(
 	if (p_hkmap && KeyTyped)
 	    c = hkmap(c);		// Hebrew mode mapping
 #endif
+
+	// If the window was made so small that nothing shows, make it at least
+	// one line and one column when typing.
+	if (KeyTyped && !KeyStuffed)
+	    win_ensure_size();
 
 	/*
 	 * Special handling of keys while the popup menu is visible or wanted
@@ -1057,6 +1067,9 @@ doESCkey:
 	case K_CURSORHOLD:	// Didn't type something for a while.
 	    ins_apply_autocmds(EVENT_CURSORHOLDI);
 	    did_cursorhold = TRUE;
+	    // If CTRL-G U was used apply it to the next typed key.
+	    if (dont_sync_undo == TRUE)
+		dont_sync_undo = MAYBE;
 	    break;
 
 #ifdef FEAT_GUI_MSWIN
@@ -1474,9 +1487,9 @@ ins_redraw(int ready)	    // not busy with something
 	last_cursormoved = curwin->w_cursor;
     }
 
-    // Trigger TextChangedI if b_changedtick differs.
+    // Trigger TextChangedI if b_changedtick_i differs.
     if (ready && has_textchangedI()
-	    && curbuf->b_last_changedtick != CHANGEDTICK(curbuf)
+	    && curbuf->b_last_changedtick_i != CHANGEDTICK(curbuf)
 	    && !pum_visible())
     {
 	aco_save_T	aco;
@@ -1486,15 +1499,15 @@ ins_redraw(int ready)	    // not busy with something
 	aucmd_prepbuf(&aco, curbuf);
 	apply_autocmds(EVENT_TEXTCHANGEDI, NULL, NULL, FALSE, curbuf);
 	aucmd_restbuf(&aco);
-	curbuf->b_last_changedtick = CHANGEDTICK(curbuf);
+	curbuf->b_last_changedtick_i = CHANGEDTICK(curbuf);
 	if (tick != CHANGEDTICK(curbuf))  // see ins_apply_autocmds()
 	    u_save(curwin->w_cursor.lnum,
 					(linenr_T)(curwin->w_cursor.lnum + 1));
     }
 
-    // Trigger TextChangedP if b_changedtick differs. When the popupmenu closes
-    // TextChangedI will need to trigger for backwards compatibility, thus use
-    // different b_last_changedtick* variables.
+    // Trigger TextChangedP if b_changedtick_pum differs. When the popupmenu
+    // closes TextChangedI will need to trigger for backwards compatibility,
+    // thus use different b_last_changedtick* variables.
     if (ready && has_textchangedP()
 	    && curbuf->b_last_changedtick_pum != CHANGEDTICK(curbuf)
 	    && pum_visible())
@@ -3582,6 +3595,11 @@ ins_esc(
 {
     int		temp;
     static int	disabled_redraw = FALSE;
+#ifdef FEAT_CONCEAL
+    // Remember if the cursor line was concealed before changing State.
+    int		cursor_line_was_concealed = curwin->w_p_cole > 0
+						&& conceal_cursor_line(curwin);
+#endif
 
 #ifdef FEAT_SPELL
     check_spell_redraw();
@@ -3701,6 +3719,11 @@ ins_esc(
 	// Re-enable modifyOtherKeys.
 	out_str(T_CTI);
     }
+#ifdef FEAT_CONCEAL
+    // Check if the cursor line needs redrawing after changing State.  If
+    // 'concealcursor' is "i" it needs to be redrawn without concealing.
+    conceal_check_cursor_line(cursor_line_was_concealed);
+#endif
 
     // When recording or for CTRL-O, need to display the new mode.
     // Otherwise remove the mode message.
@@ -5129,7 +5152,8 @@ ins_eol(int c)
 
     AppendToRedobuff(NL_STR);
     i = open_line(FORWARD,
-	    has_format_option(FO_RET_COMS) ? OPENLINE_DO_COM : 0, old_indent);
+	    has_format_option(FO_RET_COMS) ? OPENLINE_DO_COM : 0, old_indent,
+	    NULL);
     old_indent = 0;
 #ifdef FEAT_CINDENT
     can_cindent = TRUE;

@@ -297,7 +297,7 @@ popup_drag(win_T *wp)
 	return;
     }
 
-    if (!(wp->w_popup_flags & POPF_DRAG))
+    if (!(wp->w_popup_flags & (POPF_DRAG | POPF_DRAGALL)))
 	return;
     wp->w_wantline = drag_start_wantline + (mouse_row - drag_start_row);
     if (wp->w_wantline < 1)
@@ -632,7 +632,7 @@ popup_highlight_curline(win_T *wp)
 
 	    if (syn_name2id((char_u *)linehl) == 0)
 		linehl = "PmenuSel";
-	    sign_define_by_name(sign_name, NULL, (char_u *)linehl, NULL, NULL);
+	    sign_define_by_name(sign_name, NULL, (char_u *)linehl, NULL, NULL, NULL, NULL);
 	}
 
 	sign_place(&sign_id, (char_u *)"PopUpMenu", sign_name,
@@ -687,6 +687,14 @@ apply_general_options(win_T *wp, dict_T *dict)
 	else
 	    wp->w_popup_flags &= ~POPF_DRAG;
     }
+    nr = dict_get_bool(dict, (char_u *)"dragall", -1);
+    if (nr != -1)
+    {
+	if (nr)
+	    wp->w_popup_flags |= POPF_DRAGALL;
+	else
+	    wp->w_popup_flags &= ~POPF_DRAGALL;
+    }
 
     nr = dict_get_bool(dict, (char_u *)"posinvert", -1);
     if (nr != -1)
@@ -732,8 +740,13 @@ apply_general_options(win_T *wp, dict_T *dict)
 
     str = dict_get_string(dict, (char_u *)"highlight", FALSE);
     if (str != NULL)
+    {
 	set_string_option_direct_in_win(wp, (char_u *)"wincolor", -1,
 						   str, OPT_FREE|OPT_LOCAL, 0);
+#ifdef FEAT_TERMINAL
+	term_update_wincolor(wp);
+#endif
+    }
 
     set_padding_border(dict, wp->w_popup_padding, "padding", 999);
     set_padding_border(dict, wp->w_popup_border, "border", 1);
@@ -1851,20 +1864,20 @@ popup_create(typval_T *argvars, typval_T *rettv, create_type_T type)
     int		nr;
     int		i;
 
-    if (in_vim9script()
-	    && (check_for_string_or_number_or_list_arg(argvars, 0) == FAIL
-		|| check_for_dict_arg(argvars, 1) == FAIL))
-	return NULL;
-
     if (argvars != NULL)
     {
+	if (in_vim9script()
+		&& (check_for_string_or_number_or_list_arg(argvars, 0) == FAIL
+		    || check_for_dict_arg(argvars, 1) == FAIL))
+	    return NULL;
+
 	// Check that arguments look OK.
 	if (argvars[0].v_type == VAR_NUMBER)
 	{
 	    buf = buflist_findnr(argvars[0].vval.v_number);
 	    if (buf == NULL)
 	    {
-		semsg(_(e_nobufnr), argvars[0].vval.v_number);
+		semsg(_(e_buffer_nr_does_not_exist), argvars[0].vval.v_number);
 		return NULL;
 	    }
 #ifdef FEAT_TERMINAL
@@ -2353,7 +2366,7 @@ filter_handle_drag(win_T *wp, int c, typval_T *rettv)
     int	row = mouse_row;
     int	col = mouse_col;
 
-    if ((wp->w_popup_flags & POPF_DRAG)
+    if ((wp->w_popup_flags & (POPF_DRAG | POPF_DRAGALL))
 	    && is_mouse_key(c)
 	    && (wp == popup_dragwin
 			  || wp == mouse_find_win(&row, &col, FIND_POPUP)))
@@ -3073,6 +3086,8 @@ f_popup_getoptions(typval_T *argvars, typval_T *rettv)
 	dict_add_string(dict, "title", wp->w_popup_title);
 	dict_add_number(dict, "wrap", wp->w_p_wrap);
 	dict_add_number(dict, "drag", (wp->w_popup_flags & POPF_DRAG) != 0);
+	dict_add_number(dict, "dragall",
+				      (wp->w_popup_flags & POPF_DRAGALL) != 0);
 	dict_add_number(dict, "mapping",
 				      (wp->w_popup_flags & POPF_MAPPING) != 0);
 	dict_add_number(dict, "resize", (wp->w_popup_flags & POPF_RESIZE) != 0);
@@ -3342,7 +3357,7 @@ popup_do_filter(int c)
 
 	// Reset got_int to avoid a function used in the statusline aborts.
 	got_int = FALSE;
-	redraw_after_callback(FALSE);
+	redraw_after_callback(FALSE, FALSE);
 	got_int |= save_got_int;
     }
     recursive = FALSE;
@@ -3654,7 +3669,11 @@ may_update_popup_mask(int type)
 	    for (col = wp->w_wincol;
 		 col < wp->w_wincol + width - wp->w_popup_leftoff
 						&& col < screen_Columns; ++col)
-		if (wp->w_popup_mask_cells == NULL
+		if (wp->w_zindex < POPUPMENU_ZINDEX
+			&& pum_visible()
+			&& pum_under_menu(line, col, FALSE))
+		    mask[line * screen_Columns + col] = POPUPMENU_ZINDEX;
+		else if (wp->w_popup_mask_cells == NULL
 				|| !popup_masked(wp, width, height, col, line))
 		    mask[line * screen_Columns + col] = wp->w_zindex;
     }

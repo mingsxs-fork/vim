@@ -40,6 +40,7 @@ jobs:
             compiler: gcc
             coverage: true
             extra: testgui
+            uchar: true
           - features: huge
             compiler: clang
             extra: asan
@@ -74,16 +75,16 @@ jobs:
             libtool-bin \
             libsodium-dev
 
-      - name: Install clang-11
+      - name: Install clang-13
         if: matrix.compiler == 'clang'
         run: |
           wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
           . /etc/lsb-release
-          sudo add-apt-repository -y "deb http://apt.llvm.org/${DISTRIB_CODENAME}/ llvm-toolchain-${DISTRIB_CODENAME}-11 main"
-          sudo apt-get install -y clang-11
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-11 100
-          sudo update-alternatives --set clang /usr/bin/clang-11
-          sudo update-alternatives --install /usr/bin/llvm-cov llvm-cov /usr/bin/llvm-cov-11 100
+          sudo add-apt-repository -y "deb http://apt.llvm.org/${DISTRIB_CODENAME}/ llvm-toolchain-${DISTRIB_CODENAME}-13 main"
+          sudo apt-get install -y clang-13 llvm-13
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-13 100
+          sudo update-alternatives --set clang /usr/bin/clang-13
+          sudo update-alternatives --install /usr/bin/llvm-cov llvm-cov /usr/bin/llvm-cov-13 100
 
       - name: Set up environment
         run: |
@@ -111,9 +112,13 @@ jobs:
             ;;
           esac
 
+          CFLAGS=""
           if ${{ matrix.coverage == true }}; then
-            echo "CFLAGS=--coverage -DUSE_GCOV_FLUSH"
+            CFLAGS="$CFLAGS --coverage -DUSE_GCOV_FLUSH"
             echo "LDFLAGS=--coverage"
+          fi
+          if ${{ matrix.uchar == true }}; then
+            CFLAGS="$CFLAGS -funsigned-char"
           fi
           if ${{ contains(matrix.extra, 'testgui') }}; then
             echo "TEST=-C src testgui"
@@ -130,6 +135,7 @@ jobs:
           if ${{ contains(matrix.extra, 'vimtags') }}; then
             echo "TEST=-C runtime/doc vimtags VIMEXE=../../${SRCDIR}/vim"
           fi
+          echo "CFLAGS=$CFLAGS"
           ) >> $GITHUB_ENV
 
       - name: Set up system
@@ -182,6 +188,10 @@ jobs:
           # Append various warning flags to CFLAGS.
           sed -i -f ci/config.mk.sed ${SRCDIR}/auto/config.mk
           sed -i -f ci/config.mk.${CC}.sed ${SRCDIR}/auto/config.mk
+          if [[ ${CC} = clang ]]; then
+            # Suppress some warnings produced by clang 12 and later.
+            sed -i -f ci/config.mk.clang-12.sed ${SRCDIR}/auto/config.mk
+          fi
 
       - name: Build
         if: (!contains(matrix.extra, 'unittests'))
@@ -201,18 +211,18 @@ jobs:
           do_test() { sg audio "sg $(id -gn) '$*'"; }
           do_test make ${SHADOWOPT} ${TEST}
 
-      - name: Coveralls
-        if: matrix.coverage && success() && github.event_name != 'pull_request'
-        env:
-          COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_REPO_TOKEN }}
-          COVERALLS_PARALLEL: true
-          TRAVIS_JOB_ID: ${{ github.run_id }}
-        run: |
-          sudo apt-get install -y python3-setuptools python3-wheel
-          sudo -H pip3 install pip -U
-          # needed for https support for coveralls building cffi only works with gcc, not with clang
-          CC=gcc pip3 install --user cpp-coveralls pyopenssl ndg-httpsclient pyasn1
-          ~/.local/bin/coveralls -b "${SRCDIR}" -x .xs -e "${SRCDIR}"/if_perl.c -e "${SRCDIR}"/xxd -e "${SRCDIR}"/libvterm --encodings utf-8
+      #      - name: Coveralls
+      #        if: matrix.coverage && success() && github.event_name != 'pull_request'
+      #        env:
+      #          COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_REPO_TOKEN }}
+      #          COVERALLS_PARALLEL: true
+      #          TRAVIS_JOB_ID: ${{ github.run_id }}
+      #        run: |
+      #          sudo apt-get install -y python3-setuptools python3-wheel
+      #          sudo -H pip3 install pip -U
+      #          # needed for https support for coveralls building cffi only works with gcc, not with clang
+      #          CC=gcc pip3 install --user cpp-coveralls pyopenssl ndg-httpsclient pyasn1
+      #          ~/.local/bin/coveralls -b "${SRCDIR}" -x .xs -e "${SRCDIR}"/if_perl.c -e "${SRCDIR}"/xxd -e "${SRCDIR}"/libvterm --encodings utf-8
 
       - name: Codecov
         if: matrix.coverage && success()
@@ -224,28 +234,28 @@ jobs:
         if: contains(matrix.extra, 'asan') && !cancelled()
         run: |
           for f in $(grep -lR '#[[:digit:]]* *0x[[:digit:]a-fA-F]*' "${LOG_DIR}"); do
-            asan_symbolize-11 -l "$f"
+            asan_symbolize-13 -l "$f"
             false # in order to fail a job
           done
 
-  coveralls:
-    runs-on: ubuntu-18.04
-
-    needs: linux
-    if: always() && github.event_name != 'pull_request'
-
-    steps:
-      - name: Parallel finished
-        env:
-          COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_REPO_TOKEN }}
-        run: |
-          curl -k "https://coveralls.io/webhook?repo_token=${COVERALLS_REPO_TOKEN}" -d "payload[build_num]=${GITHUB_RUN_ID}&payload[status]=done"
+  #  coveralls:
+  #    runs-on: ubuntu-18.04
+  #
+  #    needs: linux
+  #    if: always() && github.event_name != 'pull_request'
+  #
+  #    steps:
+  #      - name: Parallel finished
+  #        env:
+  #          COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_REPO_TOKEN }}
+  #        run: |
+  #          curl -k "https://coveralls.io/webhook?repo_token=${COVERALLS_REPO_TOKEN}" -d "payload[build_num]=${GITHUB_RUN_ID}&payload[status]=done"
 
   macos:
     runs-on: macos-latest
 
     env:
-      CC: ${{ matrix.compiler }}
+      CC: clang
       TEST: test
       SRCDIR: ./src
       LEAK_CFLAGS: -DEXITFREE
@@ -254,8 +264,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        features: [tiny, huge]
-        compiler: [clang, gcc]
+        features: [tiny, normal, huge]
 
     steps:
       - uses: actions/checkout@v2
@@ -276,6 +285,8 @@ jobs:
             echo "TEST=testtiny"
             echo "CONFOPT=--disable-gui"
             ;;
+          normal)
+            ;;
           huge)
             echo "CONFOPT=--enable-perlinterp --enable-python3interp --enable-rubyinterp --enable-luainterp --enable-tclinterp"
             ;;
@@ -290,6 +301,10 @@ jobs:
           sed -i.bak -f ci/config.mk.sed ${SRCDIR}/auto/config.mk
           # On macOS, the entity of gcc is clang.
           sed -i.bak -f ci/config.mk.clang.sed ${SRCDIR}/auto/config.mk
+          # Suppress some warnings produced by clang 12 and later.
+          if clang --version | grep -qs 'Apple clang version \(1[3-9]\|[2-9]\)\.'; then
+            sed -i.bak -f ci/config.mk.clang-12.sed ${SRCDIR}/auto/config.mk
+          fi
 
       - name: Build
         env:

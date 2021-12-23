@@ -77,6 +77,17 @@ margin_columns_win(win_T *wp, int *left_col, int *right_col)
 
 #ifdef FEAT_SIGNS
 /*
+ * Return TRUE if CursorLineSign highlight is to be used.
+ */
+    static int
+use_cursor_line_sign(win_T *wp, linenr_T lnum)
+{
+    return wp->w_p_cul
+	    && lnum == wp->w_cursor.lnum
+	    && (wp->w_p_culopt_flags & CULOPT_NBR);
+}
+
+/*
  * Get information needed to display the sign in line 'lnum' in window 'wp'.
  * If 'nrcol' is TRUE, the sign is going to be displayed in the number column.
  * Otherwise the sign is going to be displayed in the sign column.
@@ -85,7 +96,7 @@ margin_columns_win(win_T *wp, int *left_col, int *right_col)
 get_sign_display_info(
 	int		nrcol,
 	win_T		*wp,
-	linenr_T	lnum UNUSED,
+	linenr_T	lnum,
 	sign_attrs_T	*sattr,
 	int		wcr_attr,
 	int		row,
@@ -111,7 +122,10 @@ get_sign_display_info(
 	*n_extrap = number_width(wp) + 1;
     else
     {
-	*char_attrp = hl_combine_attr(wcr_attr, HL_ATTR(HLF_SC));
+	if (use_cursor_line_sign(wp, lnum))
+	    *char_attrp = hl_combine_attr(wcr_attr, HL_ATTR(HLF_CLS));
+	else
+	    *char_attrp = hl_combine_attr(wcr_attr, HL_ATTR(HLF_SC));
 	*n_extrap = 2;
     }
 
@@ -176,7 +190,11 @@ get_sign_display_info(
 		    *c_finalp = NUL;
 		    *n_extrap = (int)STRLEN(*pp_extra);
 		}
-		*char_attrp = sattr->sat_texthl;
+
+		if (use_cursor_line_sign(wp, lnum) && sattr->sat_culhl > 0)
+		    *char_attrp = sattr->sat_culhl;
+		else
+		    *char_attrp = sattr->sat_texthl;
 	    }
     }
 }
@@ -247,10 +265,14 @@ win_line(
     int		c_extra = NUL;		// extra chars, all the same
     int		c_final = NUL;		// final char, mandatory if set
     int		extra_attr = 0;		// attributes when n_extra != 0
+#if defined(FEAT_LINEBREAK) && defined(FEAT_PROP_POPUP)
+    int		in_linebreak = FALSE;	// n_extra set for showing linebreak
+#endif
     static char_u *at_end_str = (char_u *)""; // used for p_extra when
 					// displaying eol at end-of-line
     int		lcs_eol_one = wp->w_lcs_chars.eol; // eol until it's been used
-    int		lcs_prec_todo = wp->w_lcs_chars.prec; // prec until it's been used
+    int		lcs_prec_todo = wp->w_lcs_chars.prec;
+					// prec until it's been used
 
     // saved "extra" items for when draw_state becomes WL_LINE (again)
     int		saved_n_extra = 0;
@@ -355,6 +377,7 @@ win_line(
 #ifdef FEAT_SIGNS
     int		sign_present = FALSE;
     sign_attrs_T sattr;
+    int		num_attr = 0;		// attribute for the number column
 #endif
 #ifdef FEAT_ARABIC
     int		prev_c = 0;		// previous Arabic character
@@ -416,6 +439,7 @@ win_line(
 
 #if defined(FEAT_CONCEAL) || defined(FEAT_SEARCH_EXTRA)
     int		match_conc	= 0;	// cchar for match functions
+    int		on_last_col     = FALSE;
 #endif
 #ifdef FEAT_CONCEAL
     int		syntax_flags	= 0;
@@ -676,6 +700,8 @@ win_line(
 
 #ifdef FEAT_SIGNS
     sign_present = buf_get_signattrs(wp, lnum, &sattr);
+    if (sign_present)
+	num_attr = sattr.sat_numhl;
 #endif
 
 #ifdef LINE_ATTR
@@ -1051,7 +1077,12 @@ win_line(
 			p_extra = p_extra_free;
 			c_extra = NUL;
 			c_final = NUL;
-			char_attr = hl_combine_attr(wcr_attr, HL_ATTR(HLF_FC));
+			if (use_cursor_line_sign(wp, lnum))
+			    char_attr =
+				   hl_combine_attr(wcr_attr, HL_ATTR(HLF_CLF));
+			else
+			    char_attr =
+				    hl_combine_attr(wcr_attr, HL_ATTR(HLF_FC));
 		    }
 		}
 	    }
@@ -1178,6 +1209,10 @@ win_line(
 			  char_attr = hl_combine_attr(wcr_attr,
 							     HL_ATTR(HLF_LNB));
 		    }
+#ifdef FEAT_SIGNS
+		    if (num_attr)
+			char_attr = num_attr;
+#endif
 		}
 	    }
 
@@ -1359,7 +1394,8 @@ win_line(
 		v = (long)(ptr - line);
 		search_attr = update_search_hl(wp, lnum, (colnr_T)v, &line,
 				      &screen_search_hl, &has_match_conc,
-				      &match_conc, did_line_attr, lcs_eol_one);
+				      &match_conc, did_line_attr, lcs_eol_one,
+				      &on_last_col);
 		ptr = line + v;  // "line" may have been changed
 
 		// Do not allow a conceal over EOL otherwise EOL will be missed
@@ -1394,7 +1430,11 @@ win_line(
 		int pi;
 		int bcol = (int)(ptr - line);
 
-		if (n_extra > 0)
+		if (n_extra > 0
+# ifdef FEAT_LINEBREAK
+			&& !in_linebreak
+# endif
+			)
 		    --bcol;  // still working on the previous char, e.g. Tab
 
 		// Check if any active property ends.
@@ -1412,9 +1452,19 @@ win_line(
 					 * (text_props_active - (pi + 1)));
 			--text_props_active;
 			--pi;
+# ifdef FEAT_LINEBREAK
+			// not exactly right but should work in most cases
+			if (in_linebreak && syntax_attr == text_prop_attr)
+			    syntax_attr = 0;
+# endif
 		    }
 		}
 
+# ifdef FEAT_LINEBREAK
+		if (n_extra > 0 && in_linebreak)
+		    // not on the next char yet, don't start another prop
+		    --bcol;
+# endif
 		// Add any text property that starts in this column.
 		while (text_prop_next < text_prop_count
 			   && bcol >= text_props[text_prop_next].tp_col - 1)
@@ -1680,6 +1730,10 @@ win_line(
 		++p_extra;
 	    }
 	    --n_extra;
+#if defined(FEAT_LINEBREAK) && defined(FEAT_PROP_POPUP)
+	    if (n_extra <= 0)
+		in_linebreak = FALSE;
+#endif
 	}
 	else
 	{
@@ -1989,6 +2043,10 @@ win_line(
 			if (n_extra < 0)
 			    n_extra = 0;
 		    }
+		    if (on_last_col)
+			// Do not continue search/match highlighting over the
+			// line break.
+			search_attr = 0;
 
 		    if (c == TAB && n_extra + col > wp->w_width)
 # ifdef FEAT_VARTABS
@@ -2001,6 +2059,10 @@ win_line(
 
 		    c_extra = mb_off > 0 ? MB_FILLER_CHAR : ' ';
 		    c_final = NUL;
+# if defined(FEAT_PROP_POPUP)
+		    if (n_extra > 0 && c != TAB)
+			in_linebreak = TRUE;
+# endif
 		    if (VIM_ISWHITE(c))
 		    {
 # ifdef FEAT_CONCEAL

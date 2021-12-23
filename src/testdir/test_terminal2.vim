@@ -217,6 +217,7 @@ func Test_termwinscroll()
   CheckUnix
   " TODO: Somehow this test sometimes hangs in the GUI
   CheckNotGui
+  let g:test_is_flaky = 1
 
   " Let the terminal output more than 'termwinscroll' lines, some at the start
   " will be dropped.
@@ -412,6 +413,7 @@ func Test_terminal_does_not_truncate_last_newlines()
   if has('conpty')
     throw 'Skipped: fail on ConPTY'
   endif
+  let g:test_is_flaky = 1
   let contents = [
   \   [ 'One', '', 'X' ],
   \   [ 'Two', '', '' ],
@@ -519,15 +521,11 @@ func Test_term_gettitle()
   endif
 
   let term = term_start([GetVimProg(), '--clean', '-c', 'set noswapfile', '-c', 'set title'])
-  if has('autoservername')
-    call WaitForAssert({-> assert_match('^\[No Name\] - VIM\d\+$', term_gettitle(term)) })
-    call term_sendkeys(term, ":e Xfoo\r")
-    call WaitForAssert({-> assert_match('^Xfoo (.*[/\\]testdir) - VIM\d\+$', term_gettitle(term)) })
-  else
-    call WaitForAssert({-> assert_equal('[No Name] - VIM', term_gettitle(term)) })
-    call term_sendkeys(term, ":e Xfoo\r")
-    call WaitForAssert({-> assert_match('^Xfoo (.*[/\\]testdir) - VIM$', term_gettitle(term)) })
-  endif
+  " When Vim is running as a server then the title ends in VIM{number}, thus
+  " optionally match a number after "VIM".
+  call WaitForAssert({-> assert_match('^\[No Name\] - VIM\d*$', term_gettitle(term)) })
+  call term_sendkeys(term, ":e Xfoo\r")
+  call WaitForAssert({-> assert_match('^Xfoo (.*[/\\]testdir) - VIM\d*$', term_gettitle(term)) })
 
   call term_sendkeys(term, ":set titlestring=foo\r")
   call WaitForAssert({-> assert_equal('foo', term_gettitle(term)) })

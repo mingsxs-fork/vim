@@ -136,6 +136,12 @@ func Test_path_keep_commas()
   set path&
 endfunc
 
+func Test_path_too_long()
+  exe 'set path=' .. repeat('x', 10000)
+  call assert_fails('find x', 'E854:')
+  set path&
+endfunc
+
 func Test_signcolumn()
   CheckFeature signs
   call assert_equal("auto", &signcolumn)
@@ -256,7 +262,7 @@ func Test_set_completion()
 
   " Expand abbreviation of options.
   call feedkeys(":set ts\<C-A>\<C-B>\"\<CR>", 'tx')
-  call assert_equal('"set tabstop thesaurus ttyscroll', @:)
+  call assert_equal('"set tabstop thesaurus thesaurusfunc ttyscroll', @:)
 
   " Expand current value
   call feedkeys(":set fileencodings=\<C-A>\<C-B>\"\<CR>", 'tx')
@@ -1154,7 +1160,7 @@ func Test_cmdheight()
   set cmdheight&
 endfunc
 
-" To specify a control character as a option value, '^' can be used
+" To specify a control character as an option value, '^' can be used
 func Test_opt_control_char()
   set wildchar=^v
   call assert_equal("\<C-V>", nr2char(&wildchar))
@@ -1191,6 +1197,27 @@ func Test_opt_scrolljump()
 
   set scrolljump&
   bw
+endfunc
+
+" Test for the 'cdhome' option
+func Test_opt_cdhome()
+  if has('unix') || has('vms')
+    throw 'Skipped: only works on non-Unix'
+  endif
+
+  set cdhome&
+  call assert_equal(0, &cdhome)
+  set cdhome
+
+  " This paragraph is copied from Test_cd_no_arg().
+  let path = getcwd()
+  cd
+  call assert_equal($HOME, getcwd())
+  call assert_notequal(path, getcwd())
+  exe 'cd ' .. fnameescape(path)
+  call assert_equal(path, getcwd())
+
+  set cdhome&
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

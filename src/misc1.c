@@ -675,6 +675,11 @@ f_mode(typval_T *argvars, typval_T *rettv)
 	{
 	    buf[0] = 'R';
 	    buf[1] = 'v';
+
+	    if (ins_compl_active())
+		buf[2] = 'c';
+	    else if (ctrl_x_mode_not_defined_yet())
+		buf[2] = 'x';
 	}
 	else
 	{
@@ -682,6 +687,7 @@ f_mode(typval_T *argvars, typval_T *rettv)
 		buf[0] = 'R';
 	    else
 		buf[0] = 'i';
+
 	    if (ins_compl_active())
 		buf[1] = 'c';
 	    else if (ctrl_x_mode_not_defined_yet())
@@ -712,6 +718,10 @@ f_mode(typval_T *argvars, typval_T *rettv)
 	    buf[1] = 'i';
 	    buf[2] = restart_edit;
 	}
+#ifdef FEAT_TERMINAL
+	else if (term_in_normal_mode())
+	    buf[1] = 't';
+#endif
     }
 
     // Clear out the minor mode when the argument is not a non-zero number or
@@ -842,7 +852,8 @@ get_keystroke(void)
 
 	if (n == KEYLEN_REMOVED)  // key code removed
 	{
-	    if (must_redraw != 0 && !need_wait_return && (State & CMDLINE) == 0)
+	    if (must_redraw != 0 && !need_wait_return
+				 && (State & (CMDLINE|HITRETURN|ASKMORE)) == 0)
 	    {
 		// Redrawing was postponed, do it now.
 		update_screen(0);
@@ -2392,7 +2403,7 @@ get_cmd_output_as_rettv(
 	    buf = buflist_findnr(argvars[1].vval.v_number);
 	    if (buf == NULL)
 	    {
-		semsg(_(e_nobufnr), argvars[1].vval.v_number);
+		semsg(_(e_buffer_nr_does_not_exist), argvars[1].vval.v_number);
 		fclose(fd);
 		goto errret;
 	    }
@@ -2633,7 +2644,7 @@ path_with_url(char_u *fname)
 	return 0;
 
     // check body: alpha or dash
-    for (p = fname; (isalpha(*p) || (*p == '-')); ++p)
+    for (p = fname + 1; (isalpha(*p) || (*p == '-')); ++p)
 	;
 
     // check last char is not a dash
@@ -2644,26 +2655,67 @@ path_with_url(char_u *fname)
     return path_is_url(p);
 }
 
+#if defined(FEAT_EVAL) || defined(PROTO)
+/*
+ * Return the dictionary of v:event.
+ * Save and clear the value in case it already has items.
+ */
+    dict_T *
+get_v_event(save_v_event_T *sve)
+{
+    dict_T	*v_event = get_vim_var_dict(VV_EVENT);
+
+    if (v_event->dv_hashtab.ht_used > 0)
+    {
+	// recursive use of v:event, save, make empty and restore later
+	sve->sve_did_save = TRUE;
+	sve->sve_hashtab = v_event->dv_hashtab;
+	hash_init(&v_event->dv_hashtab);
+    }
+    else
+	sve->sve_did_save = FALSE;
+    return v_event;
+}
+
+    void
+restore_v_event(dict_T *v_event, save_v_event_T *sve)
+{
+    dict_free_contents(v_event);
+    if (sve->sve_did_save)
+	v_event->dv_hashtab = sve->sve_hashtab;
+    else
+	hash_init(&v_event->dv_hashtab);
+}
+#endif
+
 /*
  * Fires a ModeChanged autocmd
  */
     void
 trigger_modechanged()
 {
-#if defined(FEAT_EVAL) || defined(PROTO)
+#ifdef FEAT_EVAL
     dict_T	    *v_event;
     typval_T	    rettv;
-    typval_T	    tv;
+    typval_T	    tv[2];
     char_u	    *pat_pre;
     char_u	    *pat;
+    save_v_event_T  save_v_event;
 
     if (!has_modechanged())
 	return;
 
-    v_event = get_vim_var_dict(VV_EVENT);
+    tv[0].v_type = VAR_NUMBER;
+    tv[0].vval.v_number = 1;	    // get full mode
+    tv[1].v_type = VAR_UNKNOWN;
+    f_mode(tv, &rettv);
+    if (STRCMP(rettv.vval.v_string, last_mode) == 0)
+    {
+	vim_free(rettv.vval.v_string);
+	return;
+    }
 
-    tv.v_type = VAR_UNKNOWN;
-    f_mode(&tv, &rettv);
+    v_event = get_v_event(&save_v_event);
     (void)dict_add_string(v_event, "new_mode", rettv.vval.v_string);
     (void)dict_add_string(v_event, "old_mode", last_mode);
     dict_set_items_ro(v_event);
@@ -2676,9 +2728,8 @@ trigger_modechanged()
     apply_autocmds(EVENT_MODECHANGED, pat, NULL, FALSE, curbuf);
     STRCPY(last_mode, rettv.vval.v_string);
 
-    vim_free(rettv.vval.v_string);
     vim_free(pat);
-    dict_free_contents(v_event);
-    hash_init(&v_event->dv_hashtab);
+    restore_v_event(v_event, &save_v_event);
+    vim_free(rettv.vval.v_string);
 #endif
 }

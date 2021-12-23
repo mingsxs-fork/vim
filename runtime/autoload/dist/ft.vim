@@ -1,7 +1,7 @@
 " Vim functions for file type detection
 "
 " Maintainer:	Bram Moolenaar <Bram@vim.org>
-" Last Change:	2020 Aug 17
+" Last Change:	2021 Nov 27
 
 " These functions are moved here from runtime/filetype.vim to make startup
 " faster.
@@ -219,6 +219,23 @@ func dist#ft#FTe()
   endif
 endfunc
 
+" Distinguish between Forth and F#.
+" Provided by Doug Kearns.
+func dist#ft#FTfs()
+  if exists("g:filetype_fs")
+    exe "setf " . g:filetype_fs
+  else
+    let line = getline(nextnonblank(1))
+    " comments and colon definitions
+    if line =~ '^\s*\.\=( ' || line =~ '^\s*\\G\= ' || line =~ '^\\$'
+	  \ || line =~ '^\s*: \S'
+      setf forth
+    else
+      setf fsharp
+    endif
+  endif
+endfunc
+
 " Distinguish between HTML, XHTML and Django
 func dist#ft#FThtml()
   let n = 1
@@ -272,6 +289,8 @@ func dist#ft#FTm()
   " excluding end(for|function|if|switch|while) common to Murphi
   let octave_block_terminators = '\<end\%(_try_catch\|classdef\|enumeration\|events\|methods\|parfor\|properties\)\>'
 
+  let objc_preprocessor = '^\s*#\s*\%(import\|include\|define\|if\|ifn\=def\|undef\|line\|error\|pragma\)\>'
+
   let n = 1
   let saw_comment = 0 " Whether we've seen a multiline comment leader.
   while n < 100
@@ -282,7 +301,7 @@ func dist#ft#FTm()
       " anything more definitive.
       let saw_comment = 1
     endif
-    if line =~ '^\s*\(#\s*\(include\|import\)\>\|@import\>\|//\)'
+    if line =~ '^\s*//' || line =~ '^\s*@import\>' || line =~ objc_preprocessor
       setf objc
       return
     endif
@@ -792,6 +811,23 @@ func dist#ft#Redif()
   endwhile
 endfunc
 
+" This function is called for all files under */debian/patches/*, make sure not
+" to non-dep3patch files, such as README and other text files.
+func dist#ft#Dep3patch()
+  if expand('%:t') ==# 'series'
+    return
+  endif
+
+  for ln in getline(1, 100)
+    if ln =~# '^\%(Description\|Subject\|Origin\|Bug\|Forwarded\|Author\|From\|Reviewed-by\|Acked-by\|Last-Updated\|Applied-Upstream\):'
+      setf dep3patch
+      return
+    elseif ln =~# '^---'
+      " end of headers found. stop processing
+      return
+    endif
+  endfor
+endfunc
 
 " Restore 'cpoptions'
 let &cpo = s:cpo_save

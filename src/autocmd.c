@@ -186,6 +186,7 @@ static struct event_name
     {"VimLeave",	EVENT_VIMLEAVE},
     {"VimLeavePre",	EVENT_VIMLEAVEPRE},
     {"WinNew",		EVENT_WINNEW},
+    {"WinClosed",	EVENT_WINCLOSED},
     {"WinEnter",	EVENT_WINENTER},
     {"WinLeave",	EVENT_WINLEAVE},
     {"VimResized",	EVENT_VIMRESIZED},
@@ -386,7 +387,7 @@ au_cleanup(void)
 	return;
 
     // loop over all events
-    for (event = (event_T)0; (int)event < (int)NUM_EVENTS;
+    for (event = (event_T)0; (int)event < NUM_EVENTS;
 					    event = (event_T)((int)event + 1))
     {
 	// loop over all autocommand patterns
@@ -460,7 +461,7 @@ aubuflocal_remove(buf_T *buf)
 	    apc->arg_bufnr = 0;
 
     // invalidate buflocals looping through events
-    for (event = (event_T)0; (int)event < (int)NUM_EVENTS;
+    for (event = (event_T)0; (int)event < NUM_EVENTS;
 					    event = (event_T)((int)event + 1))
 	// loop over all autocommand patterns
 	FOR_ALL_AUTOCMD_PATTERNS(event, ap)
@@ -523,7 +524,7 @@ au_del_group(char_u *name)
 	AutoPat	*ap;
 	int	in_use = FALSE;
 
-	for (event = (event_T)0; (int)event < (int)NUM_EVENTS;
+	for (event = (event_T)0; (int)event < NUM_EVENTS;
 					    event = (event_T)((int)event + 1))
 	{
 	    FOR_ALL_AUTOCMD_PATTERNS(event, ap)
@@ -695,7 +696,7 @@ find_end_event(
     {
 	for (pat = arg; *pat && *pat != '|' && !VIM_ISWHITE(*pat); pat = p)
 	{
-	    if ((int)event_name2nr(pat, &p) >= (int)NUM_EVENTS)
+	    if ((int)event_name2nr(pat, &p) >= NUM_EVENTS)
 	    {
 		if (have_group)
 		    semsg(_("E216: No such event: %s"), pat);
@@ -844,6 +845,7 @@ do_autocmd(exarg_T *eap, char_u *arg_in, int forceit)
 
     if (*arg == '|')
     {
+	eap->nextcmd = arg + 1;
 	arg = (char_u *)"";
 	group = AUGROUP_ALL;	// no argument, use all groups
     }
@@ -868,6 +870,7 @@ do_autocmd(exarg_T *eap, char_u *arg_in, int forceit)
     pat = skipwhite(pat);
     if (*pat == '|')
     {
+	eap->nextcmd = pat + 1;
 	pat = (char_u *)"";
 	cmd = (char_u *)"";
     }
@@ -967,7 +970,7 @@ do_autocmd(exarg_T *eap, char_u *arg_in, int forceit)
 	if (!forceit && *cmd != NUL)
 	    emsg(_(e_cannot_define_autocommands_for_all_events));
 	else
-	    for (event = (event_T)0; (int)event < (int)NUM_EVENTS;
+	    for (event = (event_T)0; (int)event < NUM_EVENTS;
 					     event = (event_T)((int)event + 1))
 		if (do_autocmd_event(event, pat,
 			     once, nested, cmd, forceit, group, flags) == FAIL)
@@ -1217,6 +1220,23 @@ do_autocmd_event(
 		    vim_free(ap);
 		    return FAIL;
 		}
+
+#ifdef FEAT_EVAL
+		// need to initialize last_mode for the first ModeChanged
+		// autocmd
+		if (event == EVENT_MODECHANGED && !has_modechanged())
+		{
+		    typval_T rettv;
+		    typval_T tv[2];
+
+		    tv[0].v_type = VAR_NUMBER;
+		    tv[0].vval.v_number = 1;
+		    tv[1].v_type = VAR_UNKNOWN;
+		    f_mode(tv, &rettv);
+		    STRCPY(last_mode, rettv.vval.v_string);
+		    vim_free(rettv.vval.v_string);
+		}
+#endif
 
 		if (is_buflocal)
 		{
@@ -1593,10 +1613,15 @@ win_found:
 #endif
 	}
 #if defined(FEAT_GUI)
-	// Hide the scrollbars from the aucmd_win and update.
-	gui_mch_enable_scrollbar(&aucmd_win->w_scrollbars[SBAR_LEFT], FALSE);
-	gui_mch_enable_scrollbar(&aucmd_win->w_scrollbars[SBAR_RIGHT], FALSE);
-	gui_may_update_scrollbars();
+	if (gui.in_use)
+	{
+	    // Hide the scrollbars from the aucmd_win and update.
+	    gui_mch_enable_scrollbar(
+				   &aucmd_win->w_scrollbars[SBAR_LEFT], FALSE);
+	    gui_mch_enable_scrollbar(
+				  &aucmd_win->w_scrollbars[SBAR_RIGHT], FALSE);
+	    gui_may_update_scrollbars();
+	}
 #endif
     }
     else
@@ -1871,6 +1896,7 @@ apply_autocmds_group(
     int		did_save_redobuff = FALSE;
     save_redo_T	save_redo;
     int		save_KeyTyped = KeyTyped;
+    int		save_did_emsg;
     ESTACK_CHECK_DECLARATION
 
     /*
@@ -2025,7 +2051,8 @@ apply_autocmds_group(
 		|| event == EVENT_OPTIONSET
 		|| event == EVENT_QUICKFIXCMDPOST
 		|| event == EVENT_DIRCHANGED
-		|| event == EVENT_MODECHANGED)
+		|| event == EVENT_MODECHANGED
+		|| event == EVENT_WINCLOSED)
 	{
 	    fname = vim_strsave(fname);
 	    autocmd_fname_full = TRUE; // don't expand it later
@@ -2150,8 +2177,12 @@ apply_autocmds_group(
 	    // make sure cursor and topline are valid
 	    check_lnums(TRUE);
 
+	save_did_emsg = did_emsg;
+
 	do_cmdline(NULL, getnextac, (void *)&patcmd,
 				     DOCMD_NOWAIT|DOCMD_VERBOSE|DOCMD_REPEAT);
+
+	did_emsg += save_did_emsg;
 
 	if (nesting == 1)
 	    // restore cursor and topline, unless they were changed
@@ -2232,10 +2263,8 @@ apply_autocmds_group(
 		|| event == EVENT_VIMLEAVE
 		|| event == EVENT_VIMLEAVEPRE))
     {
-#ifdef FEAT_TITLE
 	if (curbuf->b_changed != save_changed)
 	    need_maketitle = TRUE;
-#endif
 	curbuf->b_changed = save_changed;
     }
 

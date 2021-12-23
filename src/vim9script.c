@@ -13,7 +13,8 @@
 
 #include "vim.h"
 
-#if defined(FEAT_EVAL)
+// When not generating protos this is included in proto.h
+#ifdef PROTO
 # include "vim9.h"
 #endif
 
@@ -268,6 +269,7 @@ free_all_script_vars(scriptitem_T *si)
     hashitem_T	*hi;
     sallvar_T	*sav;
     sallvar_T	*sav_next;
+    int		idx;
 
     hash_lock(ht);
     todo = (int)ht->ht_used;
@@ -293,6 +295,13 @@ free_all_script_vars(scriptitem_T *si)
     hash_clear(ht);
     hash_init(ht);
 
+    for (idx = 0; idx < si->sn_var_vals.ga_len; ++idx)
+    {
+	svar_T    *sv = ((svar_T *)si->sn_var_vals.ga_data) + idx;
+
+	if (sv->sv_type_allocated)
+	    free_type(sv->sv_type);
+    }
     ga_clear(&si->sn_var_vals);
 
     // existing commands using script variable indexes are no longer valid
@@ -899,7 +908,22 @@ update_vim9_script_var(
     {
 	if (*type == NULL)
 	    *type = typval2type(tv, get_copyID(), &si->sn_type_list, do_member);
-	sv->sv_type = *type;
+	if (sv->sv_type_allocated)
+	    free_type(sv->sv_type);
+	if (*type != NULL && ((*type)->tt_type == VAR_FUNC
+					   || (*type)->tt_type == VAR_PARTIAL))
+	{
+	    // The type probably uses uf_type_list, which is cleared when the
+	    // function is freed, but the script variable may keep the type.
+	    // Make a copy to avoid using freed memory.
+	    sv->sv_type = alloc_type(*type);
+	    sv->sv_type_allocated = TRUE;
+	}
+	else
+	{
+	    sv->sv_type = *type;
+	    sv->sv_type_allocated = FALSE;
+	}
     }
 
     // let ex_export() know the export worked.
@@ -978,8 +1002,9 @@ find_typval_in_script(typval_T *dest)
 	// legacy script doesn't store variable types
 	return NULL;
 
-    // Find the svar_T in sn_var_vals.
-    for (idx = 0; idx < si->sn_var_vals.ga_len; ++idx)
+    // Find the svar_T in sn_var_vals.  Start at the end, in a for loop the
+    // variable was added at the end.
+    for (idx = si->sn_var_vals.ga_len - 1; idx >= 0; --idx)
     {
 	svar_T    *sv = ((svar_T *)si->sn_var_vals.ga_data) + idx;
 
@@ -998,35 +1023,29 @@ find_typval_in_script(typval_T *dest)
  */
     int
 check_script_var_type(
-	typval_T    *dest,
+	svar_T	    *sv,
 	typval_T    *value,
 	char_u	    *name,
 	where_T	    where)
 {
-    svar_T  *sv = find_typval_in_script(dest);
     int	    ret;
 
-    if (sv != NULL)
+    if (sv->sv_const != 0)
     {
-	if (sv->sv_const != 0)
-	{
-	    semsg(_(e_cannot_change_readonly_variable_str), name);
-	    return FAIL;
-	}
-	ret = check_typval_type(sv->sv_type, value, where);
-	if (ret == OK && need_convert_to_bool(sv->sv_type, value))
-	{
-	    int	val = tv2bool(value);
-
-	    clear_tv(value);
-	    value->v_type = VAR_BOOL;
-	    value->v_lock = 0;
-	    value->vval.v_number = val ? VVAL_TRUE : VVAL_FALSE;
-	}
-	return ret;
+	semsg(_(e_cannot_change_readonly_variable_str), name);
+	return FAIL;
     }
+    ret = check_typval_type(sv->sv_type, value, where);
+    if (ret == OK && need_convert_to_bool(sv->sv_type, value))
+    {
+	int	val = tv2bool(value);
 
-    return OK; // not really
+	clear_tv(value);
+	value->v_type = VAR_BOOL;
+	value->v_lock = 0;
+	value->vval.v_number = val ? VVAL_TRUE : VVAL_FALSE;
+    }
+    return ret;
 }
 
 // words that cannot be used as a variable

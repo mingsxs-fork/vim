@@ -477,7 +477,19 @@ check_typval_type(type_T *expected, typval_T *actual_tv, where_T where)
     ga_init2(&type_list, sizeof(type_T *), 10);
     actual_type = typval2type(actual_tv, get_copyID(), &type_list, TRUE);
     if (actual_type != NULL)
-	res = check_type(expected, actual_type, TRUE, where);
+    {
+	res = check_type_maybe(expected, actual_type, TRUE, where);
+	if (res == MAYBE && !(actual_type->tt_type == VAR_FUNC
+				      && actual_type->tt_member == &t_unknown))
+	{
+	    // If a type check is needed that means assigning "any" or
+	    // "unknown" to a more specific type, which fails here.
+	    // Execpt when it looks like a lambda, since they have an
+	    // incomplete type.
+	    type_mismatch_where(expected, actual_type, where);
+	    res = FAIL;
+	}
+    }
     clear_type_list(&type_list);
     return res;
 }
@@ -531,9 +543,31 @@ type_mismatch_where(type_T *expected, type_T *actual, where_T where)
  * Check if the expected and actual types match.
  * Does not allow for assigning "any" to a specific type.
  * When "argidx" > 0 it is included in the error message.
+ * Return OK if types match.
+ * Return FAIL if types do not match.
  */
     int
-check_type(type_T *expected, type_T *actual, int give_msg, where_T where)
+check_type(
+	type_T	*expected,
+	type_T	*actual,
+	int	give_msg,
+	where_T where)
+{
+    int ret = check_type_maybe(expected, actual, give_msg, where);
+
+    return ret == MAYBE ? OK : ret;
+}
+
+/*
+ * As check_type() but return MAYBE when a runtime type check should be used
+ * when compiling.
+ */
+    int
+check_type_maybe(
+	type_T	*expected,
+	type_T	*actual,
+	int	give_msg,
+	where_T where)
 {
     int ret = OK;
 
@@ -545,7 +579,11 @@ check_type(type_T *expected, type_T *actual, int give_msg, where_T where)
     {
 	// tt_type should match, except that a "partial" can be assigned to a
 	// variable with type "func".
+	// And "unknown" (using global variable) and "any" need a runtime type
+	// check.
 	if (!(expected->tt_type == actual->tt_type
+		    || actual->tt_type == VAR_UNKNOWN
+		    || actual->tt_type == VAR_ANY
 		    || (expected->tt_type == VAR_FUNC
 					   && actual->tt_type == VAR_PARTIAL)))
 	{
@@ -560,25 +598,30 @@ check_type(type_T *expected, type_T *actual, int give_msg, where_T where)
 	if (expected->tt_type == VAR_DICT || expected->tt_type == VAR_LIST)
 	{
 	    // "unknown" is used for an empty list or dict
-	    if (actual->tt_member != &t_unknown)
-		ret = check_type(expected->tt_member, actual->tt_member,
+	    if (actual->tt_member != NULL && actual->tt_member != &t_unknown)
+		ret = check_type_maybe(expected->tt_member, actual->tt_member,
 								 FALSE, where);
 	}
-	else if (expected->tt_type == VAR_FUNC)
+	else if (expected->tt_type == VAR_FUNC && actual != &t_any)
 	{
 	    // If the return type is unknown it can be anything, including
 	    // nothing, thus there is no point in checking.
-	    if (expected->tt_member != &t_unknown
+	    if (expected->tt_member != &t_unknown)
+	    {
+		if (actual->tt_member != NULL
 					    && actual->tt_member != &t_unknown)
-		ret = check_type(expected->tt_member, actual->tt_member,
-								 FALSE, where);
-	    if (ret == OK && expected->tt_argcount != -1
+		    ret = check_type_maybe(expected->tt_member,
+					      actual->tt_member, FALSE, where);
+		else
+		    ret = MAYBE;
+	    }
+	    if (ret != FAIL && expected->tt_argcount != -1
 		    && actual->tt_min_argcount != -1
 		    && (actual->tt_argcount == -1
 			|| (actual->tt_argcount < expected->tt_min_argcount
 			    || actual->tt_argcount > expected->tt_argcount)))
 		ret = FAIL;
-	    if (ret == OK && expected->tt_args != NULL
+	    if (ret != FAIL && expected->tt_args != NULL
 						    && actual->tt_args != NULL)
 	    {
 		int i;
@@ -593,10 +636,21 @@ check_type(type_T *expected, type_T *actual, int give_msg, where_T where)
 			break;
 		    }
 	    }
+	    if (ret == OK && expected->tt_argcount >= 0
+						  && actual->tt_argcount == -1)
+		// check the argument count at runtime
+		ret = MAYBE;
 	}
 	if (ret == FAIL && give_msg)
 	    type_mismatch_where(expected, actual, where);
     }
+
+    if (ret == OK && expected->tt_type != VAR_UNKNOWN
+	    && expected->tt_type != VAR_ANY
+	    && (actual->tt_type == VAR_UNKNOWN || actual->tt_type == VAR_ANY))
+	// check the type at runtime
+	ret = MAYBE;
+
     return ret;
 }
 
@@ -618,12 +672,12 @@ check_argument_types(
 	return OK;  // just in case
     if (argcount < type->tt_min_argcount - varargs)
     {
-	semsg(_(e_toofewarg), name);
+	semsg(_(e_not_enough_arguments_for_function_str), name);
 	return FAIL;
     }
     if (!varargs && type->tt_argcount >= 0 && argcount > type->tt_argcount)
     {
-	semsg(_(e_toomanyarg), name);
+	semsg(_(e_too_many_arguments_for_function_str), name);
 	return FAIL;
     }
     if (type->tt_args == NULL)
@@ -893,7 +947,7 @@ parse_type(char_u **arg, garray_T *type_gap, int give_error)
 		    if (*p != ')')
 		    {
 			if (give_error)
-			    emsg(_(e_missing_close));
+			    emsg(_(e_missing_closing_paren));
 			return NULL;
 		    }
 		    *arg = p + 1;

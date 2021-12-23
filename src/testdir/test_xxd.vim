@@ -213,6 +213,46 @@ func Test_xxd()
   call delete('XXDfile')
 endfunc
 
+func Test_xxd_patch()
+  let cmd1 = 'silent !' .. s:xxd_cmd .. ' -r Xxxdin Xxxdfile'
+  let cmd2 = 'silent !' .. s:xxd_cmd .. ' -g1 Xxxdfile > Xxxdout'
+  call writefile(["2: 41 41", "8: 42 42"], 'Xxxdin')
+  call writefile(['::::::::'], 'Xxxdfile')
+  exe cmd1
+  exe cmd2
+  call assert_equal(['00000000: 3a 3a 41 41 3a 3a 3a 3a 42 42                    ::AA::::BB'], readfile('Xxxdout'))
+
+  call writefile(["2: 43 43 ", "8: 44 44"], 'Xxxdin')
+  exe cmd1
+  exe cmd2
+  call assert_equal(['00000000: 3a 3a 43 43 3a 3a 3a 3a 44 44                    ::CC::::DD'], readfile('Xxxdout'))
+
+  call writefile(["2: 45 45  ", "8: 46 46"], 'Xxxdin')
+  exe cmd1
+  exe cmd2
+  call assert_equal(['00000000: 3a 3a 45 45 3a 3a 3a 3a 46 46                    ::EE::::FF'], readfile('Xxxdout'))
+  
+  call writefile(["2: 41 41", "08: 42 42"], 'Xxxdin')
+  call writefile(['::::::::'], 'Xxxdfile')
+  exe cmd1
+  exe cmd2
+  call assert_equal(['00000000: 3a 3a 41 41 3a 3a 3a 3a 42 42                    ::AA::::BB'], readfile('Xxxdout'))
+
+  call writefile(["2: 43 43 ", "09: 44 44"], 'Xxxdin')
+  exe cmd1
+  exe cmd2
+  call assert_equal(['00000000: 3a 3a 43 43 3a 3a 3a 3a 42 44 44                 ::CC::::BDD'], readfile('Xxxdout'))
+
+  call writefile(["2: 45 45  ", "0a: 46 46"], 'Xxxdin')
+  exe cmd1
+  exe cmd2
+  call assert_equal(['00000000: 3a 3a 45 45 3a 3a 3a 3a 42 44 46 46              ::EE::::BDFF'], readfile('Xxxdout'))
+  
+  call delete('Xxxdin')
+  call delete('Xxxdfile')
+  call delete('Xxxdout')
+endfunc
+
 " Various ways with wrong arguments that trigger the usage output.
 func Test_xxd_usage()
   for arg in ['-c', '-g', '-o', '-s', '-l', '-X', 'one two three']
@@ -221,6 +261,20 @@ func Test_xxd_usage()
     call assert_match("Usage:", join(getline(1, 3)))
     bwipe!
   endfor
+endfunc
+
+func Test_xxd_ignore_garbage()
+  new
+  exe 'r! printf "\n\r xxxx 0: 42 42" | ' . s:xxd_cmd . ' -r'
+  call assert_match('BB', join(getline(1, 3)))
+  bwipe!
+endfunc
+
+func Test_xxd_bit_dump()
+  new
+  exe 'r! printf "123456" | ' . s:xxd_cmd . ' -b1'
+  call assert_match('00000000: 00110001 00110010 00110011 00110100 00110101 00110110  123456', join(getline(1, 3)))
+  bwipe!
 endfunc
 
 func Test_xxd_version()
