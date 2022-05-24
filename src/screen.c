@@ -68,13 +68,13 @@ conceal_cursor_line(win_T *wp)
 
     if (*wp->w_p_cocu == NUL)
 	return FALSE;
-    if (get_real_state() & VISUAL)
+    if (get_real_state() & MODE_VISUAL)
 	c = 'v';
-    else if (State & INSERT)
+    else if (State & MODE_INSERT)
 	c = 'i';
-    else if (State & NORMAL)
+    else if (State & MODE_NORMAL)
 	c = 'n';
-    else if (State & CMDLINE)
+    else if (State & MODE_CMDLINE)
 	c = 'c';
     else
 	return FALSE;
@@ -614,9 +614,9 @@ screen_line(
 	    }
 	    // When writing a single-width character over a double-width
 	    // character and at the end of the redrawn text, need to clear out
-	    // the right halve of the old character.
-	    // Also required when writing the right halve of a double-width
-	    // char over the left halve of an existing one.
+	    // the right half of the old character.
+	    // Also required when writing the right half of a double-width
+	    // char over the left half of an existing one.
 	    if (has_mbyte && col + char_cells == endcol
 		    && ((char_cells == 1
 			    && (*mb_off2cells)(off_to, max_off_to) > 1)
@@ -1495,8 +1495,9 @@ screen_puts_len(
     int		textlen,
     int		row,
     int		col,
-    int		attr)
+    int		attr_arg)
 {
+    int		attr = attr_arg;
     unsigned	off;
     char_u	*ptr = text;
     int		len = textlen;
@@ -1524,8 +1525,8 @@ screen_puts_len(
 	return;
     off = LineOffset[row] + col;
 
-    // When drawing over the right halve of a double-wide char clear out the
-    // left halve.  Only needed in a terminal.
+    // When drawing over the right half of a double-wide char clear out the
+    // left half.  Only needed in a terminal.
     if (has_mbyte && col > 0 && col < screen_Columns
 #ifdef FEAT_GUI
 	    && !gui.in_use
@@ -1653,9 +1654,9 @@ screen_puts_len(
 #endif
 	    // When at the end of the text and overwriting a two-cell
 	    // character with a one-cell character, need to clear the next
-	    // cell.  Also when overwriting the left halve of a two-cell char
-	    // with the right halve of a two-cell char.  Do this only once
-	    // (mb_off2cells() may return 2 on the right halve).
+	    // cell.  Also when overwriting the left half of a two-cell char
+	    // with the right half of a two-cell char.  Do this only once
+	    // (mb_off2cells() may return 2 on the right half).
 	    if (clear_next_cell)
 		clear_next_cell = FALSE;
 	    else if (has_mbyte
@@ -1722,8 +1723,10 @@ screen_puts_len(
 	    if (clear_next_cell)
 	    {
 		// This only happens at the end, display one space next.
+		// Keep the attribute from before.
 		ptr = (char_u *)" ";
 		len = -1;
+		attr = ScreenAttrs[off];
 	    }
 	}
 	else
@@ -1796,7 +1799,7 @@ screen_start_highlight(int attr)
 	    char	buf[20];
 
 	    // The GUI handles this internally.
-	    sprintf(buf, IF_EB("\033|%dh", ESC_STR "|%dh"), attr);
+	    sprintf(buf, "\033|%dh", attr);
 	    OUT_STR(buf);
 	}
 	else
@@ -1946,7 +1949,7 @@ screen_stop_highlight(void)
 	    char	buf[20];
 
 	    // use internal GUI code
-	    sprintf(buf, IF_EB("\033|%dH", ESC_STR "|%dH"), screen_attr);
+	    sprintf(buf, "\033|%dH", screen_attr);
 	    OUT_STR(buf);
 	}
 	else
@@ -2328,9 +2331,9 @@ space_to_screenline(int off, int attr)
 }
 
 /*
- * Fill the screen from 'start_row' to 'end_row', from 'start_col' to 'end_col'
- * with character 'c1' in first column followed by 'c2' in the other columns.
- * Use attributes 'attr'.
+ * Fill the screen from "start_row" to "end_row" (exclusive), from "start_col"
+ * to "end_col" (exclusive) with character "c1" in first column followed by
+ * "c2" in the other columns.  Use attributes "attr".
  */
     void
 screen_fill(
@@ -2376,9 +2379,9 @@ screen_fill(
 #endif
 	   )
 	{
-	    // When drawing over the right halve of a double-wide char clear
-	    // out the left halve.  When drawing over the left halve of a
-	    // double wide-char clear out the right halve.  Only needed in a
+	    // When drawing over the right half of a double-wide char clear
+	    // out the left half.  When drawing over the left half of a
+	    // double wide-char clear out the right half.  Only needed in a
 	    // terminal.
 	    if (start_col > 0 && mb_fix_col(start_col, row) != start_col)
 		screen_puts_len((char_u *)" ", 1, row, start_col - 1, 0);
@@ -3631,9 +3634,9 @@ win_rest_invalid(win_T *wp)
 
 /*
  * insert lines on the screen and update ScreenLines[]
- * 'end' is the line after the scrolled part. Normally it is Rows.
- * When scrolling region used 'off' is the offset from the top for the region.
- * 'row' and 'end' are relative to the start of the region.
+ * "end" is the line after the scrolled part. Normally it is Rows.
+ * When scrolling region used "off" is the offset from the top for the region.
+ * "row" and "end" are relative to the start of the region.
  *
  * return FAIL for failure, OK for success.
  */
@@ -3658,14 +3661,15 @@ screen_ins_lines(
     /*
      * FAIL if
      * - there is no valid screen
-     * - the screen has to be redrawn completely
      * - the line count is less than one
      * - the line count is more than 'ttyscroll'
+     * - "end" is more than "Rows" (safety check, should not happen)
      * - redrawing for a callback and there is a modeless selection
      * - there is a popup window
      */
      if (!screen_valid(TRUE)
 	     || line_count <= 0 || line_count > p_ttyscroll
+	     || end > Rows
 #ifdef FEAT_CLIPBOARD
 	     || (clip_star.state != SELECT_CLEARED
 						 && redrawing_for_callback > 0)
@@ -3703,7 +3707,15 @@ screen_ins_lines(
      */
     result_empty = (row + line_count >= end);
     if (wp != NULL && wp->w_width != Columns && *T_CSV == NUL)
+    {
+	// Avoid that lines are first cleared here and then redrawn, which
+	// results in many characters updated twice.  This happens with CTRL-F
+	// in a vertically split window.  With line-by-line scrolling
+	// USE_REDRAW should be faster.
+	if (line_count > 3)
+	    return FAIL;
 	type = USE_REDRAW;
+    }
     else if (can_clear(T_CD) && result_empty)
 	type = USE_T_CD;
     else if (*T_CAL != NUL && (line_count > 1 || *T_AL == NUL))
@@ -3875,7 +3887,7 @@ screen_del_lines(
     int		end,
     int		force,		// even when line_count > p_ttyscroll
     int		clear_attr,	// used for clearing lines
-    win_T	*wp UNUSED)	// NULL or window to use width from
+    win_T	*wp)		// NULL or window to use width from
 {
     int		j;
     int		i;
@@ -3893,13 +3905,15 @@ screen_del_lines(
      * - the screen has to be redrawn completely
      * - the line count is less than one
      * - the line count is more than 'ttyscroll'
+     * - "end" is more than "Rows" (safety check, should not happen)
      * - redrawing for a callback and there is a modeless selection
      */
-    if (!screen_valid(TRUE) || line_count <= 0
-					|| (!force && line_count > p_ttyscroll)
+    if (!screen_valid(TRUE)
+	    || line_count <= 0
+	    || (!force && line_count > p_ttyscroll)
+	    || end > Rows
 #ifdef FEAT_CLIPBOARD
-	     || (clip_star.state != SELECT_CLEARED
-						 && redrawing_for_callback > 0)
+	    || (clip_star.state != SELECT_CLEARED && redrawing_for_callback > 0)
 #endif
        )
 	return FAIL;
@@ -3928,7 +3942,15 @@ screen_del_lines(
      * 6. redraw the characters from ScreenLines[].
      */
     if (wp != NULL && wp->w_width != Columns && *T_CSV == NUL)
+    {
+	// Avoid that lines are first cleared here and then redrawn, which
+	// results in many characters updated twice.  This happens with CTRL-F
+	// in a vertically split window.  With line-by-line scrolling
+	// USE_REDRAW should be faster.
+	if (line_count > 3)
+	    return FAIL;
 	type = USE_REDRAW;
+    }
     else if (can_clear(T_CD) && result_empty)
 	type = USE_T_CD;
     else if (row == 0 && (
@@ -4142,7 +4164,7 @@ showmode(void)
     int		sub_attr;
 
     do_mode = ((p_smd && msg_silent == 0)
-	    && ((State & INSERT)
+	    && ((State & MODE_INSERT)
 		|| restart_edit != NUL
 		|| VIsual_active));
     if (do_mode || reg_recording != 0)
@@ -4216,7 +4238,7 @@ showmode(void)
 		    msg_puts_attr(_(" VREPLACE"), attr);
 		else if (State & REPLACE_FLAG)
 		    msg_puts_attr(_(" REPLACE"), attr);
-		else if (State & INSERT)
+		else if (State & MODE_INSERT)
 		{
 #ifdef FEAT_RIGHTLEFT
 		    if (p_ri)
@@ -4236,7 +4258,7 @@ showmode(void)
 		    msg_puts_attr(_(" Hebrew"), attr);
 #endif
 #ifdef FEAT_KEYMAP
-		if (State & LANGMAP)
+		if (State & MODE_LANGMAP)
 		{
 # ifdef FEAT_ARABIC
 		    if (curwin->w_p_arab)
@@ -4248,7 +4270,7 @@ showmode(void)
 			    msg_puts_attr((char *)NameBuff, attr);
 		}
 #endif
-		if ((State & INSERT) && p_paste)
+		if ((State & MODE_INSERT) && p_paste)
 		    msg_puts_attr(_(" (paste)"), attr);
 
 		if (VIsual_active)
@@ -4915,19 +4937,19 @@ set_chars_option(win_T *wp, char_u **varp)
 		    s = p + len + 1;
 		    c1 = get_encoded_char_adv(&s);
 		    if (char2cells(c1) > 1)
-			return e_invarg;
+			return e_invalid_argument;
 		    if (tab[i].cp == &lcs_chars.tab2)
 		    {
 			if (*s == NUL)
-			    return e_invarg;
+			    return e_invalid_argument;
 			c2 = get_encoded_char_adv(&s);
 			if (char2cells(c2) > 1)
-			    return e_invarg;
+			    return e_invalid_argument;
 			if (!(*s == ',' || *s == NUL))
 			{
 			    c3 = get_encoded_char_adv(&s);
 			    if (char2cells(c3) > 1)
-				return e_invarg;
+				return e_invalid_argument;
 			}
 		    }
 
@@ -4969,12 +4991,12 @@ set_chars_option(win_T *wp, char_u **varp)
 			{
 			    c1 = get_encoded_char_adv(&s);
 			    if (char2cells(c1) > 1)
-				return e_invarg;
+				return e_invalid_argument;
 			    ++multispace_len;
 			}
 			if (multispace_len == 0)
 			    // lcs-multispace cannot be an empty string
-			    return e_invarg;
+			    return e_invalid_argument;
 			p = s;
 		    }
 		    else
@@ -4991,7 +5013,7 @@ set_chars_option(win_T *wp, char_u **varp)
 		    }
 		}
 		else
-		    return e_invarg;
+		    return e_invalid_argument;
 	    }
 
 	    if (*p == ',')

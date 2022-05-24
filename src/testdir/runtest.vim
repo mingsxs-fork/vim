@@ -304,6 +304,7 @@ endfunc
 func EarlyExit(test)
   " It's OK for the test we use to test the quit detection.
   if a:test != 'Test_zz_quit_detected()'
+    call add(v:errors, v:errmsg)
     call add(v:errors, 'Test caused Vim to exit: ' . a:test)
   endif
 
@@ -408,6 +409,9 @@ else
     call add(s:errors, 'Caught exception: ' . v:exception . ' @ ' . v:throwpoint)
   endtry
 endif
+
+" Delete the .res file, it may change behavior for completion
+call delete(fnamemodify(g:testname, ':r') .. '.res')
 
 " Locate Test_ functions and execute them.
 redir @q

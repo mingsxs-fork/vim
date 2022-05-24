@@ -104,7 +104,25 @@ internal_format(
 
 	// Don't break until after the comment leader
 	if (do_comments)
-	    leader_len = get_leader_len(ml_get_curline(), NULL, FALSE, TRUE);
+	{
+	    char_u *line = ml_get_curline();
+
+	    leader_len = get_leader_len(line, NULL, FALSE, TRUE);
+	    if (leader_len == 0 && curbuf->b_p_cin)
+	    {
+		int		comment_start;
+
+		// Check for a line comment after code.
+		comment_start = check_linecomment(line);
+		if (comment_start != MAXCOL)
+		{
+		    leader_len = get_leader_len(
+				      line + comment_start, NULL, FALSE, TRUE);
+		    if (leader_len != 0)
+			leader_len += comment_start;
+		}
+	    }
+	}
 	else
 	    leader_len = 0;
 
@@ -156,7 +174,7 @@ internal_format(
 		    // Increment count of how many whitespace chars in this
 		    // group; we only need to know if it's more than one.
 		    if (wcc < 2)
-		        wcc++;
+			wcc++;
 		}
 		if (curwin->w_cursor.col == 0 && WHITECHAR(cc))
 		    break;		// only spaces in front of text
@@ -193,7 +211,8 @@ internal_format(
 		if (curwin->w_cursor.col <= (colnr_T)wantcol)
 		    break;
 	    }
-	    else if ((cc >= 0x100 || !utf_allow_break_before(cc)) && fo_multibyte)
+	    else if ((cc >= 0x100 || !utf_allow_break_before(cc))
+							       && fo_multibyte)
 	    {
 		int ncc;
 		int allow_break;
@@ -309,7 +328,7 @@ internal_format(
 	undisplay_dollar();
 
 	// Offset between cursor position and line break is used by replace
-	// stack functions.  VREPLACE does not use this, and backspaces
+	// stack functions.  MODE_VREPLACE does not use this, and backspaces
 	// over the text instead.
 	if (State & VREPLACE_FLAG)
 	    orig_col = startcol;	// Will start backspacing from here
@@ -328,7 +347,7 @@ internal_format(
 
 	if (State & VREPLACE_FLAG)
 	{
-	    // In VREPLACE mode, we will backspace over the text to be
+	    // In MODE_VREPLACE state, we will backspace over the text to be
 	    // wrapped, so save a copy now to put on the next line.
 	    saved_text = vim_strsave(ml_get_cursor());
 	    curwin->w_cursor.col = orig_col;
@@ -352,6 +371,7 @@ internal_format(
 	open_line(FORWARD, OPENLINE_DELSPACES + OPENLINE_MARKFIX
 		+ (fo_white_par ? OPENLINE_KEEPTRAIL : 0)
 		+ (do_comments ? OPENLINE_DO_COM : 0)
+		+ OPENLINE_FORMAT
 		+ ((flags & INSCHAR_COM_LIST) ? OPENLINE_COM_LIST : 0)
 		, ((flags & INSCHAR_COM_LIST) ? second_indent : old_indent),
 		&did_do_comment);
@@ -407,7 +427,7 @@ internal_format(
 
 	if (State & VREPLACE_FLAG)
 	{
-	    // In VREPLACE mode we have backspaced over the text to be
+	    // In MODE_VREPLACE state we have backspaced over the text to be
 	    // moved, now we re-insert it into the new line.
 	    ins_bytes(saved_text);
 	    vim_free(saved_text);
@@ -423,16 +443,12 @@ internal_format(
 	}
 
 	haveto_redraw = TRUE;
-#ifdef FEAT_CINDENT
 	set_can_cindent(TRUE);
-#endif
 	// moved the cursor, don't autoindent or cindent now
 	did_ai = FALSE;
-#ifdef FEAT_SMARTINDENT
 	did_si = FALSE;
 	can_si = FALSE;
 	can_si_back = FALSE;
-#endif
 	line_breakcheck();
     }
 
@@ -527,7 +543,7 @@ same_leader(
     // If first leader has 'f' flag, the lines can be joined only if the
     // second line does not have a leader.
     // If first leader has 'e' flag, the lines can never be joined.
-    // If fist leader has 's' flag, the lines can only be joined if there is
+    // If first leader has 's' flag, the lines can only be joined if there is
     // some text after it and the second line has the 'm' flag.
     if (leader1_flags != NULL)
     {
@@ -902,6 +918,7 @@ fex_format(
 								   OPT_LOCAL);
     int		r;
     char_u	*fex;
+    sctx_T	save_sctx = current_sctx;
 
     // Set v:lnum to the first line number and v:count to the number of lines.
     // Set v:char to the character to be inserted (can be NUL).
@@ -913,6 +930,7 @@ fex_format(
     fex = vim_strsave(curbuf->b_p_fex);
     if (fex == NULL)
 	return 0;
+    current_sctx = curbuf->b_p_script_ctx[BV_FEX];
 
     // Evaluate the function.
     if (use_sandbox)
@@ -923,6 +941,7 @@ fex_format(
 
     set_vim_var_string(VV_CHAR, NULL, -1);
     vim_free(fex);
+    current_sctx = save_sctx;
 
     return r;
 }
@@ -948,7 +967,7 @@ format_lines(
     int		leader_len = 0;		// leader len of current line
     int		next_leader_len;	// leader len of next line
     char_u	*leader_flags = NULL;	// flags for leader of current line
-    char_u	*next_leader_flags;	// flags for leader of next line
+    char_u	*next_leader_flags = NULL; // flags for leader of next line
     int		do_comments;		// format comments
     int		do_comments_list = 0;	// format comments with 'n' or '2'
     int		advance = TRUE;
@@ -1071,7 +1090,15 @@ format_lines(
 		    || !same_leader(curwin->w_cursor.lnum,
 					leader_len, leader_flags,
 					   next_leader_len, next_leader_flags))
+	    {
+		// Special case: If the next line starts with a line comment
+		// and this line has a line comment after some text, the
+		// paragraph doesn't really end.
+		if (next_leader_flags == NULL
+			|| STRNCMP(next_leader_flags, "://", 3) != 0
+			|| check_linecomment(ml_get_curline()) == MAXCOL)
 		is_end_par = TRUE;
+	    }
 
 	    // If we have got to the end of a paragraph, or the line is
 	    // getting long, format it.
@@ -1087,14 +1114,10 @@ format_lines(
 		    // indent.
 		    if (curwin->w_cursor.lnum == first_line)
 			indent = get_indent();
-		    else
-# ifdef FEAT_LISP
-		    if (curbuf->b_p_lisp)
+		    else if (curbuf->b_p_lisp)
 			indent = get_lisp_indent();
 		    else
-# endif
 		    {
-#ifdef FEAT_CINDENT
 			if (cindent_on())
 			{
 			    indent =
@@ -1104,20 +1127,19 @@ format_lines(
 				 get_c_indent();
 			}
 			else
-#endif
 			    indent = get_indent();
 		    }
 		    (void)set_indent(indent, SIN_CHANGED);
 		}
 
 		// put cursor on last non-space
-		State = NORMAL;	// don't go past end-of-line
+		State = MODE_NORMAL;	// don't go past end-of-line
 		coladvance((colnr_T)MAXCOL);
 		while (curwin->w_cursor.col && vim_isspace(gchar_cursor()))
 		    dec_cursor();
 
 		// do the formatting, without 'showmode'
-		State = INSERT;	// for open_line()
+		State = MODE_INSERT;	// for open_line()
 		smd_save = p_smd;
 		p_smd = FALSE;
 		insertchar(NUL, INSCHAR_FORMAT

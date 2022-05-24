@@ -196,7 +196,16 @@ func Test_statusline()
   set virtualedit=all
   norm 10|
   call assert_match('^10,-10\s*$', s:get_statusline())
+  set list
+  call assert_match('^10,-10\s*$', s:get_statusline())
   set virtualedit&
+  exe "norm A\<Tab>\<Tab>a\<Esc>"
+  " In list mode a <Tab> is shown as "^I", which is 2-wide.
+  call assert_match('^9,-9\s*$', s:get_statusline())
+  set list&
+  " Now the second <Tab> ends at the 16th screen column.
+  call assert_match('^17,-17\s*$', s:get_statusline())
+  undo
 
   " %w: Preview window flag, text is "[Preview]".
   " %W: Preview window flag, text is ",PRV".
@@ -251,7 +260,7 @@ func Test_statusline()
   call assert_match('^vimLineComment\s*$', s:get_statusline())
   syntax off
 
-  "%{%expr%}: evaluates enxpressions present in result of expr
+  "%{%expr%}: evaluates expressions present in result of expr
   func! Inner_eval()
     return '%n some other text'
   endfunc
@@ -460,7 +469,6 @@ func Test_statusline_removed_group()
   call writefile(lines, 'XTest_statusline')
 
   let buf = RunVimInTerminal('-S XTest_statusline', {'rows': 10, 'cols': 50})
-  call TermWait(buf, 50)
   call VerifyScreenDump(buf, 'Test_statusline_1', {})
 
   " clean up
@@ -530,6 +538,24 @@ func Test_statusline_verylong_filename()
   set previewwindow
   redraw
   bwipe!
+endfunc
+
+func Test_statusline_highlight_truncate()
+  CheckScreendump
+
+  let lines =<< trim END
+    set laststatus=2
+    hi! link User1 Directory
+    hi! link User2 ErrorMsg
+    set statusline=%.5(%1*ABC%2*DEF%1*GHI%)
+  END
+  call writefile(lines, 'XTest_statusline')
+
+  let buf = RunVimInTerminal('-S XTest_statusline', {'rows': 6})
+  call VerifyScreenDump(buf, 'Test_statusline_hl', {})
+
+  call StopVimInTerminal(buf)
+  call delete('XTest_statusline')
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

@@ -528,6 +528,18 @@ func Test_double_popup_terminal()
   exe buf2 .. 'bwipe!'
 endfunc
 
+func Test_escape_popup_terminal()
+  set hidden
+
+  " Cannot escape a terminal popup window using win_gotoid
+  let prev_win = win_getid()
+  eval term_start('sh', #{hidden: 1, term_finish: 'close'})->popup_create({})
+  call assert_fails("call win_gotoid(" .. prev_win .. ")", 'E863:')
+
+  call popup_clear(1)
+  set hidden&
+endfunc
+
 func Test_issue_5607()
   let wincount = winnr('$')
   exe 'terminal' &shell &shellcmdflag 'exit'
@@ -779,7 +791,7 @@ endfunc
 func Test_terminal_sync_shell_dir()
   CheckUnix
   " The test always use sh (see src/testdir/unix.vim).
-  " However, BSD's sh doesn't seem to play well with OSC 7 escape sequence.
+  " BSD's sh doesn't seem to play well with the OSC 7 escape sequence.
   CheckNotBSD
 
   set asd
@@ -789,15 +801,15 @@ func Test_terminal_sync_shell_dir()
   let chars = ",a"
   " "," is url-encoded as '%2C'
   let chars_url = "%2Ca"
-  let tmpfolder = fnamemodify(tempname(),':h').'/'.chars
-  let tmpfolder_url = fnamemodify(tempname(),':h').'/'.chars_url
+  let tmpfolder = fnamemodify(tempname(),':h') .. '/' .. chars
+  let tmpfolder_url = fnamemodify(tempname(),':h') .. '/' .. chars_url
   call mkdir(tmpfolder, "p")
   let buf = Run_shell_in_terminal({})
-  call term_sendkeys(buf, "echo -ne $'\\e\]7;file://".tmpfolder_url."\\a'\<CR>")
-  "call term_sendkeys(buf, "cd ".tmpfolder."\<CR>")
+  call term_sendkeys(buf, "echo $'\\e\]7;file://" .. tmpfolder_url .. "\\a'\<CR>")
+  "call term_sendkeys(buf, "cd " .. tmpfolder .. "\<CR>")
   call TermWait(buf)
   if has("mac")
-    let expected = "/private".tmpfolder
+    let expected = "/private" .. tmpfolder
   else
     let expected = tmpfolder
   endif

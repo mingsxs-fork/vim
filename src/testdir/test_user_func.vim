@@ -428,7 +428,7 @@ endfunc
 
 " Test for deleting a function
 func Test_del_func()
-  call assert_fails('delfunction Xabc', 'E130:')
+  call assert_fails('delfunction Xabc', 'E117:')
   let d = {'a' : 10}
   call assert_fails('delfunc d.a', 'E718:')
   func d.fn()
@@ -497,6 +497,36 @@ func Test_func_range()
   \                 execute('function FuncRange'))
 
   bwipe!
+endfunc
+
+" Test for memory allocation failure when defining a new function
+func Test_funcdef_alloc_failure()
+  new
+  let lines =<< trim END
+    func Xtestfunc()
+      return 321
+    endfunc
+  END
+  call setline(1, lines)
+  call test_alloc_fail(GetAllocId('get_func'), 0, 0)
+  call assert_fails('source', 'E342:')
+  call assert_false(exists('*Xtestfunc'))
+  call assert_fails('delfunc Xtestfunc', 'E117:')
+  %d _
+  let lines =<< trim END
+    def g:Xvim9func(): number
+      return 456
+    enddef
+  END
+  call setline(1, lines)
+  call test_alloc_fail(GetAllocId('get_func'), 0, 0)
+  call assert_fails('source', 'E342:')
+  call assert_false(exists('*Xvim9func'))
+  "call test_alloc_fail(GetAllocId('get_func'), 0, 0)
+  "call assert_fails('source', 'E342:')
+  "call assert_false(exists('*Xtestfunc'))
+  "call assert_fails('delfunc Xtestfunc', 'E117:')
+  bw!
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

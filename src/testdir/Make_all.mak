@@ -37,6 +37,7 @@ TEST_VIM9 = \
 	test_vim9_expr \
 	test_vim9_fails \
 	test_vim9_func \
+	test_vim9_import \
 	test_vim9_script
 
 TEST_VIM9_RES = \
@@ -47,6 +48,7 @@ TEST_VIM9_RES = \
 	test_vim9_expr.res \
 	test_vim9_fails.res \
 	test_vim9_func.res \
+	test_vim9_import.res \
 	test_vim9_script.res
 
 # Benchmark scripts.
@@ -168,7 +170,6 @@ NEW_TESTS = \
 	test_join \
 	test_json \
 	test_jumplist \
-	test_jumps \
 	test_lambda \
 	test_langmap \
 	test_largefile \
@@ -183,7 +184,7 @@ NEW_TESTS = \
 	test_lua \
 	test_makeencoding \
 	test_man \
-	test_maparg \
+	test_map_functions \
 	test_mapping \
 	test_marks \
 	test_match \
@@ -424,7 +425,7 @@ NEW_TESTS_RES = \
 	test_lua.res \
 	test_makeencoding.res \
 	test_man.res \
-	test_maparg.res \
+	test_map_functions.res \
 	test_mapping.res \
 	test_marks.res \
 	test_match.res \

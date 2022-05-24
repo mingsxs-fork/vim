@@ -186,7 +186,7 @@ shortpath_for_invalid_fname(
 	    // unless get_short_pathname() did its work in-place.
 	    *fname = *bufp = save_fname;
 	    if (short_fname != save_fname)
-		vim_strncpy(save_fname, short_fname, len);
+		STRNCPY(save_fname, short_fname, len);
 	    save_fname = NULL;
 	}
 
@@ -372,12 +372,12 @@ repeat:
 	    {
 		if (GetLongPathNameW(wfname, buf, _MAX_PATH))
 		{
-		    char_u *p = utf16_to_enc(buf, NULL);
+		    char_u *q = utf16_to_enc(buf, NULL);
 
-		    if (p != NULL)
+		    if (q != NULL)
 		    {
 			vim_free(*bufp);    // free any allocated file name
-			*bufp = *fnamep = p;
+			*bufp = *fnamep = q;
 		    }
 		}
 		vim_free(wfname);
@@ -416,7 +416,7 @@ repeat:
 	// Need full path first (use expand_env() to remove a "~/")
 	if (!has_fullname && !has_homerelative)
 	{
-	    if ((c == '.' || c == '~') && **fnamep == '~')
+	    if (**fnamep == '~')
 		p = pbuf = expand_env_save(*fnamep);
 	    else
 		p = pbuf = FullName_save(*fnamep, FALSE);
@@ -842,7 +842,7 @@ f_delete(typval_T *argvars, typval_T *rettv)
     name = tv_get_string(&argvars[0]);
     if (name == NULL || *name == NUL)
     {
-	emsg(_(e_invarg));
+	emsg(_(e_invalid_argument));
 	return;
     }
 
@@ -893,32 +893,34 @@ f_exepath(typval_T *argvars, typval_T *rettv)
 }
 
 /*
+ * Return TRUE if "fname" is a readable file.
+ */
+    int
+file_is_readable(char_u *fname)
+{
+    int		fd;
+
+#ifndef O_NONBLOCK
+# define O_NONBLOCK 0
+#endif
+    if (*fname && !mch_isdir(fname)
+	      && (fd = mch_open((char *)fname, O_RDONLY | O_NONBLOCK, 0)) >= 0)
+    {
+	close(fd);
+	return TRUE;
+    }
+    return FALSE;
+}
+
+/*
  * "filereadable()" function
  */
     void
 f_filereadable(typval_T *argvars, typval_T *rettv)
 {
-    int		fd;
-    char_u	*p;
-    int		n;
-
     if (in_vim9script() && check_for_string_arg(argvars, 0) == FAIL)
 	return;
-
-#ifndef O_NONBLOCK
-# define O_NONBLOCK 0
-#endif
-    p = tv_get_string(&argvars[0]);
-    if (*p && !mch_isdir(p) && (fd = mch_open((char *)p,
-					      O_RDONLY | O_NONBLOCK, 0)) >= 0)
-    {
-	n = TRUE;
-	close(fd);
-    }
-    else
-	n = FALSE;
-
-    rettv->vval.v_number = n;
+    rettv->vval.v_number = file_is_readable(tv_get_string(&argvars[0]));
 }
 
 /*
@@ -1388,7 +1390,7 @@ f_globpath(typval_T *argvars, typval_T *rettv)
     }
     if (file != NULL && !error)
     {
-	ga_init2(&ga, (int)sizeof(char_u *), 10);
+	ga_init2(&ga, sizeof(char_u *), 10);
 	globpath(tv_get_string(&argvars[0]), file, &ga, flags);
 	if (rettv->v_type == VAR_STRING)
 	    rettv->vval.v_string = ga_concat_strings(&ga, "\n");
@@ -1412,6 +1414,18 @@ f_isdirectory(typval_T *argvars, typval_T *rettv)
 	return;
 
     rettv->vval.v_number = mch_isdir(tv_get_string(&argvars[0]));
+}
+
+/*
+ * "isabsolutepath()" function
+ */
+    void
+f_isabsolutepath(typval_T *argvars, typval_T *rettv)
+{
+    if (in_vim9script() && check_for_string_arg(argvars, 0) == FAIL)
+	return;
+
+    rettv->vval.v_number = mch_isFullName(tv_get_string_strict(&argvars[0]));
 }
 
 /*
@@ -1599,15 +1613,15 @@ readdirex_dict_arg(typval_T *tv, int *cmp)
 
     if (tv->v_type != VAR_DICT)
     {
-	emsg(_(e_dictreq));
+	emsg(_(e_dictionary_required));
 	return FAIL;
     }
 
-    if (dict_find(tv->vval.v_dict, (char_u *)"sort", -1) != NULL)
+    if (dict_has_key(tv->vval.v_dict, "sort"))
 	compare = dict_get_string(tv->vval.v_dict, (char_u *)"sort", FALSE);
     else
     {
-	semsg(_(e_no_dict_key), "sort");
+	semsg(_(e_dictionary_key_str_required), "sort");
 	return FAIL;
     }
 
@@ -1634,7 +1648,7 @@ f_readdir(typval_T *argvars, typval_T *rettv)
     char_u	*p;
     garray_T	ga;
     int		i;
-    int         sort = READDIR_SORT_BYTE;
+    int		sort = READDIR_SORT_BYTE;
 
     if (rettv_list_alloc(rettv) == FAIL)
 	return;
@@ -1687,7 +1701,7 @@ f_readdirex(typval_T *argvars, typval_T *rettv)
     char_u	*path;
     garray_T	ga;
     int		i;
-    int         sort = READDIR_SORT_BYTE;
+    int		sort = READDIR_SORT_BYTE;
 
     if (rettv_list_alloc(rettv) == FAIL)
 	return;
@@ -1761,12 +1775,12 @@ read_file_or_blob(typval_T *argvars, typval_T *rettv, int always_blob)
 
     if (mch_isdir(fname))
     {
-	semsg(_(e_src_is_directory), fname);
+	semsg(_(e_str_is_directory), fname);
 	return;
     }
     if (*fname == NUL || (fd = mch_fopen((char *)fname, READBIN)) == NULL)
     {
-	semsg(_(e_notopen), *fname == NUL ? (char_u *)_("<empty>") : fname);
+	semsg(_(e_cant_open_file_str), *fname == NUL ? (char_u *)_("<empty>") : fname);
 	return;
     }
 
@@ -1774,7 +1788,7 @@ read_file_or_blob(typval_T *argvars, typval_T *rettv, int always_blob)
     {
 	if (read_blob(fd, rettv->vval.v_blob) == FAIL)
 	{
-	    semsg(_(e_notread), fname);
+	    semsg(_(e_cant_read_file_str), fname);
 	    // An empty blob is returned on error.
 	    blob_free(rettv->vval.v_blob);
 	    rettv->vval.v_blob = NULL;
@@ -1796,7 +1810,7 @@ read_file_or_blob(typval_T *argvars, typval_T *rettv, int always_blob)
 		p < buf + readlen || (readlen <= 0 && (prevlen > 0 || binary));
 		++p)
 	{
-	    if (*p == '\n' || readlen <= 0)
+	    if (readlen <= 0 || *p == '\n')
 	    {
 		listitem_T  *li;
 		char_u	    *s	= NULL;
@@ -2056,7 +2070,7 @@ f_resolve(typval_T *argvars, typval_T *rettv)
 		{
 		    vim_free(p);
 		    vim_free(remain);
-		    emsg(_("E655: Too many symbolic links (cycle?)"));
+		    emsg(_(e_too_many_symbolic_links_cycle));
 		    rettv->vval.v_string = NULL;
 		    goto fail;
 		}
@@ -2208,16 +2222,7 @@ f_tempname(typval_T *argvars UNUSED, typval_T *rettv)
 	else if (x == '9')
 	    x = 'A';
 	else
-	{
-#ifdef EBCDIC
-	    if (x == 'I')
-		x = 'J';
-	    else if (x == 'R')
-		x = 'S';
-	    else
-#endif
-		++x;
-	}
+	    ++x;
     } while (x == 'I' || x == 'O');
 }
 
@@ -2267,7 +2272,7 @@ f_writefile(typval_T *argvars, typval_T *rettv)
     }
     else
     {
-	semsg(_(e_invarg2),
+	semsg(_(e_invalid_argument_str),
 		_("writefile() first argument must be a List or a Blob"));
 	return;
     }
@@ -2299,7 +2304,7 @@ f_writefile(typval_T *argvars, typval_T *rettv)
     if (*fname == NUL || (fd = mch_fopen((char *)fname,
 				      append ? APPENDBIN : WRITEBIN)) == NULL)
     {
-	semsg(_(e_notcreate), *fname == NUL ? (char_u *)_("<empty>") : fname);
+	semsg(_(e_cant_create_file_str), *fname == NUL ? (char_u *)_("<empty>") : fname);
 	ret = -1;
     }
     else if (blob)
@@ -2464,7 +2469,7 @@ do_browse(
 # endif
     {
 	// TODO: non-GUI file selector here
-	emsg(_("E338: Sorry, no file browser in console mode"));
+	emsg(_(e_sorry_no_file_browser_in_console_mode));
 	fname = NULL;
     }
 
@@ -3092,7 +3097,7 @@ expand_wildcards_eval(
     {
 	++emsg_off;
 	eval_pat = eval_vars(exp_pat, exp_pat, &usedlen,
-						    NULL, &ignored_msg, NULL);
+					       NULL, &ignored_msg, NULL, TRUE);
 	--emsg_off;
 	if (eval_pat != NULL)
 	    exp_pat = concat_str(eval_pat, exp_pat + usedlen);
@@ -3584,6 +3589,7 @@ unix_expandpath(
     int		didstar)	// expanded "**" once already
 {
     char_u	*buf;
+    size_t	buflen;
     char_u	*path_end;
     char_u	*p, *s, *e;
     int		start_len = gap->ga_len;
@@ -3607,7 +3613,8 @@ unix_expandpath(
     }
 
     // make room for file name
-    buf = alloc(STRLEN(path) + BASENAMELEN + 5);
+    buflen = STRLEN(path) + BASENAMELEN + 5;
+    buf = alloc(buflen);
     if (buf == NULL)
 	return 0;
 
@@ -3635,7 +3642,7 @@ unix_expandpath(
 	else if (path_end >= path + wildoff
 			 && (vim_strchr((char_u *)"*?[{~$", *path_end) != NULL
 			     || (!p_fic && (flags & EW_ICASE)
-					     && isalpha(PTR2CHAR(path_end)))))
+					  && vim_isalpha(PTR2CHAR(path_end)))))
 	    e = p;
 	if (has_mbyte)
 	{
@@ -3732,14 +3739,14 @@ unix_expandpath(
 		{
 		    // For "**" in the pattern first go deeper in the tree to
 		    // find matches.
-		    STRCPY(buf + len, "/**");
-		    STRCPY(buf + len + 3, path_end);
+		    vim_snprintf((char *)buf + len, buflen - len,
+							    "/**%s", path_end);
 		    ++stardepth;
 		    (void)unix_expandpath(gap, buf, len + 1, flags, TRUE);
 		    --stardepth;
 		}
 
-		STRCPY(buf + len, path_end);
+		vim_snprintf((char *)buf + len, buflen - len, "%s", path_end);
 		if (mch_has_exp_wildcard(path_end)) // handle more wildcards
 		{
 		    // need to expand another component of the path
@@ -3908,7 +3915,7 @@ gen_expand_wildcards(
     /*
      * The matching file names are stored in a growarray.  Init it empty.
      */
-    ga_init2(&ga, (int)sizeof(char_u *), 30);
+    ga_init2(&ga, sizeof(char_u *), 30);
 
     for (i = 0; i < num_pat; ++i)
     {
@@ -3952,13 +3959,13 @@ gen_expand_wildcards(
 	    }
 
 	    /*
-	     * If there are wildcards: Expand file names and add each match to
-	     * the list.  If there is no match, and EW_NOTFOUND is given, add
-	     * the pattern.
-	     * If there are no wildcards: Add the file name if it exists or
-	     * when EW_NOTFOUND is given.
+	     * If there are wildcards or case-insensitive expansion is
+	     * required: Expand file names and add each match to the list.  If
+	     * there is no match, and EW_NOTFOUND is given, add the pattern.
+	     * Otherwise: Add the file name if it exists or when EW_NOTFOUND is
+	     * given.
 	     */
-	    if (mch_has_exp_wildcard(p))
+	    if (mch_has_exp_wildcard(p) || (flags & EW_ICASE))
 	    {
 #if defined(FEAT_SEARCHPATH)
 		if ((flags & EW_PATH)
@@ -4006,7 +4013,7 @@ gen_expand_wildcards(
 
     // When returning FAIL the array must be freed here.
     if (retval == FAIL)
-	ga_clear(&ga);
+	ga_clear_strings(&ga);
 
     *num_file = ga.ga_len;
     *file = (ga.ga_data != NULL) ? (char_u **)ga.ga_data

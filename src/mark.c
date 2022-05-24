@@ -310,12 +310,9 @@ getmark_buf_fnum(
     // to crash.
     if (c < 0)
 	return posp;
-#ifndef EBCDIC
     if (c > '~')			// check for islower()/isupper()
 	;
-    else
-#endif
-	if (c == '\'' || c == '`')	// previous context mark
+    else if (c == '\'' || c == '`')	// previous context mark
     {
 	pos_copy = curwin->w_pcmark;	// need to make a copy because
 	posp = &pos_copy;		//   w_pcmark may be changed soon
@@ -732,7 +729,7 @@ show_one_mark(
 	    if (arg == NULL)
 		msg(_("No marks set"));
 	    else
-		semsg(_("E283: No marks matching \"%s\""), arg);
+		semsg(_(e_no_marks_matching_str), arg);
 	}
     }
     // don't output anything if 'q' typed at --more-- prompt
@@ -787,9 +784,9 @@ ex_delmarks(exarg_T *eap)
 	// clear all marks
 	clrallmarks(curbuf);
     else if (eap->forceit)
-	emsg(_(e_invarg));
+	emsg(_(e_invalid_argument));
     else if (*eap->arg == NUL)
-	emsg(_(e_argreq));
+	emsg(_(e_argument_required));
     else
     {
 	// clear specified marks only
@@ -809,7 +806,7 @@ ex_delmarks(exarg_T *eap)
 				    : ASCII_ISUPPER(p[2])))
 			    || to < from)
 		    {
-			semsg(_(e_invarg2), p);
+			semsg(_(e_invalid_argument_str), p);
 			return;
 		    }
 		    p += 2;
@@ -848,7 +845,7 @@ ex_delmarks(exarg_T *eap)
 		    case '<': curbuf->b_visual.vi_start.lnum = 0; break;
 		    case '>': curbuf->b_visual.vi_end.lnum   = 0; break;
 		    case ' ': break;
-		    default:  semsg(_(e_invarg2), p);
+		    default:  semsg(_(e_invalid_argument_str), p);
 			      return;
 		}
 	}
@@ -874,6 +871,10 @@ ex_jumps(exarg_T *eap UNUSED)
 	{
 	    name = fm_getname(&curwin->w_jumplist[i].fmark, 16);
 
+	    // Make sure to output the current indicator, even when on an wiped
+	    // out buffer.  ":filter" may still skip it.
+	    if (name == NULL && i == curwin->w_jumplistidx)
+		name = vim_strsave((char_u *)"-invalid-");
 	    // apply :filter /pat/ or file name not available
 	    if (name == NULL || message_filtered(name))
 	    {
@@ -1005,21 +1006,21 @@ mark_adjust(
 
     void
 mark_adjust_nofold(
-    linenr_T line1,
-    linenr_T line2,
-    long amount,
-    long amount_after)
+    linenr_T	line1,
+    linenr_T	line2,
+    long	amount,
+    long	amount_after)
 {
     mark_adjust_internal(line1, line2, amount, amount_after, FALSE);
 }
 
     static void
 mark_adjust_internal(
-    linenr_T line1,
-    linenr_T line2,
-    long amount,
-    long amount_after,
-    int adjust_folds UNUSED)
+    linenr_T	line1,
+    linenr_T	line2,
+    long	amount,
+    long	amount_after,
+    int		adjust_folds UNUSED)
 {
     int		i;
     int		fnum = curbuf->b_fnum;
@@ -1368,6 +1369,7 @@ free_all_marks(void)
 }
 #endif
 
+#if defined(FEAT_VIMINFO) || defined(PROTO)
 /*
  * Return a pointer to the named file marks.
  */
@@ -1376,6 +1378,7 @@ get_namedfm(void)
 {
     return namedfm;
 }
+#endif
 
 #if defined(FEAT_EVAL) || defined(PROTO)
 /*

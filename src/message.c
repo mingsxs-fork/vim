@@ -170,7 +170,7 @@ msg_attr_keep(
 #ifdef FEAT_JOB_CHANNEL
     if (emsg_to_channel_log)
 	// Write message in the channel log.
-	ch_log(NULL, "ERROR: %s", (char *)s);
+	ch_log(NULL, "ERROR: %s", s);
 #endif
 
     // Truncate the message if needed.
@@ -186,6 +186,8 @@ msg_attr_keep(
     if (keep && retval && vim_strsize((char_u *)s)
 			    < (int)(Rows - cmdline_row - 1) * Columns + sc_col)
 	set_keep_msg((char_u *)s, 0);
+
+    need_fileinfo = FALSE;
 
     vim_free(buf);
     --entered;
@@ -593,7 +595,7 @@ ignore_error_for_testing(char_u *error)
     if (STRCMP("RESET", error) == 0)
 	ga_clear_strings(&ignore_error_list);
     else
-	ga_add_string(&ignore_error_list, error);
+	ga_copy_string(&ignore_error_list, error);
 }
 
     static int
@@ -830,10 +832,13 @@ semsg(const char *s, ...)
 iemsg(char *s)
 {
     if (!emsg_not_now())
+    {
 	emsg_core((char_u *)s);
-#ifdef ABORT_ON_INTERNAL_ERROR
-    abort();
+#if defined(ABORT_ON_INTERNAL_ERROR) && defined(FEAT_EVAL)
+	set_vim_var_string(VV_ERRMSG, (char_u *)s, -1);
+	abort();
 #endif
+    }
 }
 
 #ifndef PROTO  // manual proto with __attribute__
@@ -876,9 +881,10 @@ siemsg(const char *s, ...)
     void
 internal_error(char *where)
 {
-    siemsg(_(e_intern2), where);
+    siemsg(_(e_internal_error_str), where);
 }
 
+#if defined(FEAT_EVAL) || defined(PROTO)
 /*
  * Like internal_error() but do not call abort(), to avoid tests using
  * test_unknown() and test_void() causing Vim to exit.
@@ -886,28 +892,31 @@ internal_error(char *where)
     void
 internal_error_no_abort(char *where)
 {
-     semsg(_(e_intern2), where);
+     semsg(_(e_internal_error_str), where);
 }
+#endif
 
 // emsg3() and emsgn() are in misc2.c to avoid warnings for the prototypes.
 
     void
 emsg_invreg(int name)
 {
-    semsg(_("E354: Invalid register name: '%s'"), transchar(name));
+    semsg(_(e_invalid_register_name_str), transchar(name));
 }
 
+#if defined(FEAT_EVAL) || defined(PROTO)
 /*
  * Give an error message which contains %s for "name[len]".
  */
     void
 emsg_namelen(char *msg, char_u *name, int len)
 {
-    char_u *copy = vim_strnsave((char_u *)name, len);
+    char_u *copy = vim_strnsave(name, len);
 
     semsg(msg, copy == NULL ? "NULL" : (char *)copy);
     vim_free(copy);
 }
+#endif
 
 /*
  * Like msg(), but truncate to a single line if p_shm contains 't', or when
@@ -1054,7 +1063,7 @@ ex_messages(exarg_T *eap)
 
     if (*eap->arg != NUL)
     {
-	emsg(_(e_invarg));
+	emsg(_(e_invalid_argument));
 	return;
     }
 
@@ -1176,7 +1185,7 @@ wait_return(int redraw)
 	// just changed.
 	screenalloc(FALSE);
 
-	State = HITRETURN;
+	State = MODE_HITRETURN;
 	setmouse();
 #ifdef USE_ON_FLY_SCROLL
 	dont_scroll = TRUE;		// disallow scrolling here
@@ -1348,7 +1357,7 @@ wait_return(int redraw)
 				  (Rows - cmdline_row - 1) * Columns + sc_col)
 	VIM_CLEAR(keep_msg);	    // don't redisplay message, it's too long
 
-    if (tmpState == SETWSIZE)	    // got resize event while in vgetc()
+    if (tmpState == MODE_SETWSIZE)  // got resize event while in vgetc()
     {
 	starttermcap();		    // start termcap before redrawing
 	shell_resized();
@@ -1369,7 +1378,7 @@ hit_return_msg(void)
 {
     int		save_p_more = p_more;
 
-    p_more = FALSE;	// don't want see this message when scrolling back
+    p_more = FALSE;	// don't want to see this message when scrolling back
     if (msg_didout)	// start on a new line
 	msg_putchar('\n');
     if (got_int)
@@ -1405,7 +1414,7 @@ set_keep_msg(char_u *s, int attr)
 set_keep_msg_from_hist(void)
 {
     if (keep_msg == NULL && last_msg_hist != NULL && msg_scrolled == 0
-							  && (State & NORMAL))
+						      && (State & MODE_NORMAL))
 	set_keep_msg(last_msg_hist->msg, last_msg_hist->attr);
 }
 #endif
@@ -1419,7 +1428,10 @@ msg_start(void)
     int		did_return = FALSE;
 
     if (!msg_silent)
+    {
 	VIM_CLEAR(keep_msg);
+	need_fileinfo = FALSE;
+    }
 
 #ifdef FEAT_EVAL
     if (need_clr_eos)
@@ -1715,6 +1727,9 @@ msg_outtrans_special(
 	}
 	else
 	    text = (char *)str2special(&str, from);
+	if (text[0] != NUL && text[1] == NUL)
+	    // single-byte character or illegal byte
+	    text = (char *)transchar_byte((char_u)text[0]);
 	len = vim_strsize((char_u *)text);
 	if (maxlen > 0 && retval + len >= maxlen)
 	    break;
@@ -1749,6 +1764,7 @@ str2special_save(
 
 /*
  * Return the printable string for the key codes at "*sp".
+ * On illegal byte return a string with only that byte.
  * Used for translating the lhs or rhs of a mapping to printable chars.
  * Advances "sp" to the next code.
  */
@@ -1792,28 +1808,28 @@ str2special(
 	    special = TRUE;
     }
 
-    if (has_mbyte && !IS_SPECIAL(c))
+    if (has_mbyte && !IS_SPECIAL(c) && MB_BYTE2LEN(c) > 1)
     {
-	int len = (*mb_ptr2len)(str);
+	char_u	*p;
 
-	// For multi-byte characters check for an illegal byte.
-	if (has_mbyte && MB_BYTE2LEN(*str) > len)
-	{
-	    transchar_nonprint(curbuf, buf, c);
+	*sp = str;
+	// Try to un-escape a multi-byte character after modifiers.
+	p = mb_unescape(sp);
+	if (p != NULL)
+	    // Since 'special' is TRUE the multi-byte character 'c' will be
+	    // processed by get_special_key_name()
+	    c = (*mb_ptr2char)(p);
+	else
+	    // illegal byte
 	    *sp = str + 1;
-	    return buf;
-	}
-	// Since 'special' is TRUE the multi-byte character 'c' will be
-	// processed by get_special_key_name()
-	c = (*mb_ptr2char)(str);
-	*sp = str + len;
     }
     else
+	// single-byte character or illegal byte
 	*sp = str + 1;
 
-    // Make unprintable characters in <> form, also <M-Space> and <Tab>.
+    // Make special keys and C0 control characters in <> form, also <M-Space>.
     // Use <Space> only for lhs of a mapping.
-    if (special || char2cells(c) > 1 || (from && c == ' '))
+    if (special || c < ' ' || (from && c == ' '))
 	return get_special_key_name(c, modifiers);
     buf[0] = c;
     buf[1] = NUL;
@@ -2162,6 +2178,8 @@ msg_puts_attr_len(char *str, int maxlen, int attr)
 	msg_puts_printf((char_u *)str, maxlen);
     else
 	msg_puts_display((char_u *)str, maxlen, attr, FALSE);
+
+    need_fileinfo = FALSE;
 }
 
 /*
@@ -2266,7 +2284,7 @@ msg_puts_display(
 	     */
 	    if (lines_left > 0)
 		--lines_left;
-	    if (p_more && lines_left == 0 && State != HITRETURN
+	    if (p_more && lines_left == 0 && State != MODE_HITRETURN
 					    && !msg_no_more && !exmode_active)
 	    {
 #ifdef FEAT_CON_DIALOG
@@ -2829,7 +2847,7 @@ do_more_prompt(int typed_char)
     // We get called recursively when a timer callback outputs a message. In
     // that case don't show another prompt. Also when at the hit-Enter prompt
     // and nothing was typed.
-    if (entered || (State == HITRETURN && typed_char == 0))
+    if (entered || (State == MODE_HITRETURN && typed_char == 0))
 	return FALSE;
     entered = TRUE;
 
@@ -2842,7 +2860,7 @@ do_more_prompt(int typed_char)
 	    mp_last = msg_sb_start(mp_last->sb_prev);
     }
 
-    State = ASKMORE;
+    State = MODE_ASKMORE;
     setmouse();
     if (typed_char == NUL)
 	msg_moremsg(FALSE);
@@ -2862,7 +2880,7 @@ do_more_prompt(int typed_char)
 #if defined(FEAT_MENU) && defined(FEAT_GUI)
 	if (c == K_MENU)
 	{
-	    int idx = get_menu_index(current_menu, ASKMORE);
+	    int idx = get_menu_index(current_menu, MODE_ASKMORE);
 
 	    // Used a menu.  If it starts with CTRL-Y, it must
 	    // be a "Copy" for the clipboard.  Otherwise
@@ -3311,29 +3329,29 @@ msg_moremsg(int full)
 }
 
 /*
- * Repeat the message for the current mode: ASKMORE, EXTERNCMD, CONFIRM or
- * exmode_active.
+ * Repeat the message for the current mode: MODE_ASKMORE, MODE_EXTERNCMD,
+ * MODE_CONFIRM or exmode_active.
  */
     void
 repeat_message(void)
 {
-    if (State == ASKMORE)
+    if (State == MODE_ASKMORE)
     {
 	msg_moremsg(TRUE);	// display --more-- message again
 	msg_row = Rows - 1;
     }
 #ifdef FEAT_CON_DIALOG
-    else if (State == CONFIRM)
+    else if (State == MODE_CONFIRM)
     {
 	display_confirm_msg();	// display ":confirm" message again
 	msg_row = Rows - 1;
     }
 #endif
-    else if (State == EXTERNCMD)
+    else if (State == MODE_EXTERNCMD)
     {
 	windgoto(msg_row, msg_col); // put cursor back
     }
-    else if (State == HITRETURN || State == SETWSIZE)
+    else if (State == MODE_HITRETURN || State == MODE_SETWSIZE)
     {
 	if (msg_row == Rows - 1)
 	{
@@ -3440,7 +3458,7 @@ msg_end(void)
      * we have to redraw the window.
      * Do not do this if we are abandoning the file or editing the command line.
      */
-    if (!exiting && need_wait_return && !(State & CMDLINE))
+    if (!exiting && need_wait_return && !(State & MODE_CMDLINE))
     {
 	wait_return(FALSE);
 	return FALSE;
@@ -3628,7 +3646,7 @@ verbose_open(void)
 	verbose_fd = mch_fopen((char *)p_vfile, "a");
 	if (verbose_fd == NULL)
 	{
-	    semsg(_(e_notopen), p_vfile);
+	    semsg(_(e_cant_open_file_str), p_vfile);
 	    return FAIL;
 	}
     }
@@ -3693,7 +3711,7 @@ give_warning2(char_u *message, char_u *a1, int hl)
     {
 	// Very early in initialisation and already something wrong, just give
 	// the raw message so the user at least gets a hint.
-	give_warning((char_u *)message, hl);
+	give_warning(message, hl);
     }
     else
     {
@@ -3744,6 +3762,8 @@ msg_advance(int col)
  * Other buttons- use your imagination!
  * A '&' in a button name becomes a shortcut, so each '&' should be before a
  * different letter.
+ *
+ * Returns 0 if cancelled, otherwise the nth button (1-indexed).
  */
     int
 do_dialog(
@@ -3791,7 +3811,7 @@ do_dialog(
 #endif
 
     oldState = State;
-    State = CONFIRM;
+    State = MODE_CONFIRM;
     setmouse();
 
     // Ensure raw mode here.

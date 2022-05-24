@@ -452,7 +452,7 @@ lua_link_init(char *libname, int verbose)
     if (!hinstLua)
     {
 	if (verbose)
-	    semsg(_(e_loadlib), libname, load_dll_error());
+	    semsg(_(e_could_not_load_library_str_str), libname, load_dll_error());
 	return FAIL;
     }
     for (reg = luaV_dll; reg->func; reg++)
@@ -462,7 +462,7 @@ lua_link_init(char *libname, int verbose)
 	    close_dll(hinstLua);
 	    hinstLua = 0;
 	    if (verbose)
-		semsg(_(e_loadfunc), reg->name);
+		semsg(_(e_could_not_load_library_function_str), reg->name);
 	    return FAIL;
 	}
     }
@@ -949,29 +949,29 @@ luaV_list_newindex(lua_State *L)
     li = list_find(l, n);
     if (li == NULL)
     {
-        if (!lua_isnil(L, 3))
-        {
-	   typval_T v;
-	   luaV_checktypval(L, 3, &v, "inserting list item");
-	   if (list_insert_tv(l, &v, li) == FAIL)
-	        luaL_error(L, "failed to add item to list");
-	   clear_tv(&v);
-        }
+	if (!lua_isnil(L, 3))
+	{
+	    typval_T v;
+	    luaV_checktypval(L, 3, &v, "inserting list item");
+	    if (list_insert_tv(l, &v, li) == FAIL)
+		luaL_error(L, "failed to add item to list");
+	    clear_tv(&v);
+	}
     }
     else
     {
-        if (lua_isnil(L, 3)) // remove?
-        {
+	if (lua_isnil(L, 3)) // remove?
+	{
 	    vimlist_remove(l, li, li);
 	    listitem_free(l, li);
-        }
-        else
-        {
+	}
+	else
+	{
 	    typval_T v;
 	    luaV_checktypval(L, 3, &v, "setting list item");
 	    clear_tv(&li->li_tv);
 	    li->li_tv = v;
-        }
+	}
     }
     return 0;
 }

@@ -691,7 +691,7 @@ menu_item_select(GtkWidget *widget UNUSED, gpointer data)
     char_u	*tooltip;
     static int	did_msg = FALSE;
 
-    if (State & CMDLINE)
+    if (State & MODE_CMDLINE)
 	return;
     menu = (vimmenu_T *)data;
     tooltip = CONVERT_TO_UTF8(menu->strings[MENU_INDEX_TIP]);
@@ -1107,7 +1107,7 @@ adjustment_value_changed(GtkAdjustment *adjustment, gpointer data)
     {
 	dragging = TRUE;
 
-	if (sb->wp != NULL)
+	if (sb->wp != NULL && GDK_IS_DRAWABLE(sb->id->window))
 	{
 	    int			x;
 	    int			y;
@@ -2242,7 +2242,7 @@ find_replace_dialog_create(char_u *arg, int do_replace)
 	gtk_window_present(GTK_WINDOW(frdp->dialog));
 
 	// For :promptfind dialog, always give keyboard focus to 'what' entry.
-	// For :promptrepl dialog, give it to 'with' entry if 'what' has an
+	// For :promptrepl dialog, give it to 'with' entry if 'what' has a
 	// non-empty entry; otherwise, to 'what' entry.
 	gtk_widget_grab_focus(frdp->what);
 	if (do_replace && entry_get_text_length(GTK_ENTRY(frdp->what)) > 0)

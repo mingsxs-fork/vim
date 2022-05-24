@@ -162,6 +162,8 @@ struct terminal_S {
     int		tl_cursor_shape;  // 1: block, 2: underline, 3: bar
     char_u	*tl_cursor_color; // NULL or allocated
 
+    long_u	*tl_palette; // array of 16 colors specified by term_start, can
+			     // be NULL
     int		tl_using_altscreen;
     garray_T	tl_osc_buf;	    // incomplete OSC string
 };
@@ -240,6 +242,25 @@ cursor_color_copy(char_u **to_color, char_u *from_color)
 cursor_color_get(char_u *color)
 {
     return (color == NULL) ? (char_u *)"" : color;
+}
+
+/*
+ * Return TRUE if the user-defined palette (either g:terminal_ansi_colors or the
+ * "ansi_colors" argument in term_start()) shall be applied.
+ */
+    static int
+term_use_palette()
+{
+    if (0
+#ifdef FEAT_GUI
+	    || gui.in_use
+#endif
+#ifdef FEAT_TERMGUICOLORS
+	    || p_tgc
+#endif
+       )
+	return TRUE;
+    return FALSE;
 }
 
 
@@ -326,7 +347,8 @@ set_term_and_win_size(term_T *term, jobopt_T *opt)
 
 	    vim_snprintf((char *)buf, 100, "%dx%d",
 						 term->tl_rows, term->tl_cols);
-	    set_option_value((char_u *)"termwinsize", 0L, buf, OPT_LOCAL);
+	    set_option_value_give_err((char_u *)"termwinsize",
+							   0L, buf, OPT_LOCAL);
 	}
     }
 }
@@ -340,9 +362,9 @@ init_job_options(jobopt_T *opt)
 {
     clear_job_options(opt);
 
-    opt->jo_mode = MODE_RAW;
-    opt->jo_out_mode = MODE_RAW;
-    opt->jo_err_mode = MODE_RAW;
+    opt->jo_mode = CH_MODE_RAW;
+    opt->jo_out_mode = CH_MODE_RAW;
+    opt->jo_err_mode = CH_MODE_RAW;
     opt->jo_set = JO_MODE | JO_OUT_MODE | JO_ERR_MODE;
 }
 
@@ -459,7 +481,7 @@ term_start(
 	    && argvar->vval.v_list != NULL
 	    && argvar->vval.v_list->lv_first == &range_list_item))
     {
-	emsg(_(e_invarg));
+	emsg(_(e_invalid_argument));
 	return NULL;
     }
 
@@ -704,6 +726,18 @@ term_start(
     if (opt->jo_set2 & JO2_TERM_HIGHLIGHT)
 	term->tl_highlight_name = vim_strsave(opt->jo_term_highlight);
 
+    // Save the user-defined palette, it is only used in GUI (or 'tgc' is on).
+    if (opt->jo_set2 & JO2_ANSI_COLORS)
+    {
+	term->tl_palette = ALLOC_MULT(long_u, 16);
+	if (term->tl_palette == NULL)
+	{
+	    vim_free(term);
+	    return NULL;
+	}
+	memcpy(term->tl_palette, opt->jo_ansi_colors, sizeof(long_u) * 16);
+    }
+
     // System dependent: setup the vterm and maybe start the job in it.
     if (argv == NULL
 	    && argvar->v_type == VAR_STRING
@@ -872,7 +906,7 @@ ex_terminal(exarg_T *eap)
 		tty_type = 'c';
 	    else
 	    {
-		semsg(e_invargval, "type");
+		semsg(e_invalid_value_for_argument_str, "type");
 		goto theend;
 	    }
 	    opt.jo_set2 |= JO2_TTY_TYPE;
@@ -883,7 +917,7 @@ ex_terminal(exarg_T *eap)
 	{
 	    if (*p)
 		*p = NUL;
-	    semsg(_("E181: Invalid attribute: %s"), cmd);
+	    semsg(_(e_invalid_attribute_str), cmd);
 	    goto theend;
 	}
 # undef OPTARG_HAS
@@ -935,7 +969,7 @@ ex_terminal(exarg_T *eap)
 	vim_snprintf((char *)newcmd, cmdlen, "%s %s %s", p_sh, p_shcf, cmd);
 	cmd = newcmd;
 # else
-	emsg(_("E279: Sorry, ++shell is not supported on this system"));
+	emsg(_(e_sorry_plusplusshell_not_supported_on_this_system));
 	goto theend;
 # endif
 #endif
@@ -1117,6 +1151,7 @@ free_unused_terminals()
 #endif
 	vim_free(term->tl_highlight_name);
 	vim_free(term->tl_cursor_color);
+	vim_free(term->tl_palette);
 	vim_free(term);
     }
 }
@@ -1266,7 +1301,7 @@ write_to_term(buf_T *buffer, char_u *msg, channel_T *channel)
 	// cleared.
 	// TODO: only update once in a while.
 	ch_log(term->tl_job->jv_channel, "updating screen");
-	if (buffer == curbuf && (State & CMDLINE) == 0)
+	if (buffer == curbuf && (State & MODE_CMDLINE) == 0)
 	{
 	    update_screen(VALID_NO_UPDATE);
 	    // update_screen() can be slow, check the terminal wasn't closed
@@ -1591,7 +1626,7 @@ term_job_running_check(term_T *term, int check_job_status)
     {
 	job_T *job = term->tl_job;
 
-	// Careful: Checking the job status may invoked callbacks, which close
+	// Careful: Checking the job status may invoke callbacks, which close
 	// the buffer and terminate "term".  However, "job" will not be freed
 	// yet.
 	if (check_job_status)
@@ -2035,7 +2070,7 @@ term_check_timers(int next_due_arg, proftime_T *now)
 set_terminal_mode(term_T *term, int normal_mode)
 {
     term->tl_normal_mode = normal_mode;
-    trigger_modechanged();
+    may_trigger_modechanged();
     if (!normal_mode)
 	handle_postponed_scrollback(term);
     VIM_CLEAR(term->tl_status_text);
@@ -2128,7 +2163,7 @@ term_vgetc()
     int modify_other_keys = curbuf->b_term->tl_vterm == NULL ? FALSE
 			: vterm_is_modify_other_keys(curbuf->b_term->tl_vterm);
 
-    State = TERMINAL;
+    State = MODE_TERMINAL;
     got_int = FALSE;
 #ifdef MSWIN
     ctrl_break_was_pressed = FALSE;
@@ -2229,7 +2264,8 @@ send_keys_to_term(term_T *term, int c, int modmask, int typed)
 	    break;
 
 	case K_COMMAND:
-	    return do_cmdline(NULL, getcmdkeycmd, NULL, 0);
+	case K_SCRIPT_COMMAND:
+	    return do_cmdkey_command(c, 0);
     }
     if (typed)
 	mouse_was_outside = FALSE;
@@ -2506,7 +2542,7 @@ term_win_entered()
 	if (term_use_loop_check(TRUE))
 	{
 	    reset_VIsual_and_resel();
-	    if (State & INSERT)
+	    if (State & MODE_INSERT)
 		stop_insert_mode = TRUE;
 	}
 	mouse_was_outside = FALSE;
@@ -2793,31 +2829,24 @@ color2index(VTermColor *color, int fg, int *boldp)
     int blue = color->blue;
     int green = color->green;
 
+    *boldp = FALSE;
+
     if (VTERM_COLOR_IS_INVALID(color))
 	return 0;
+
     if (VTERM_COLOR_IS_INDEXED(color))
     {
-	// The first 16 colors and default: use the ANSI index.
-	switch (color->index + 1)
+	// Use the color as-is if possible, give up otherwise.
+	if (color->index < t_colors)
+	    return color->index + 1;
+	// 8-color terminals can actually display twice as many colors by
+	// setting the high-intensity/bold bit.
+	else if (t_colors == 8 && fg && color->index < 16)
 	{
-	    case  0: return 0;
-	    case  1: return lookup_color( 0, fg, boldp) + 1; // black
-	    case  2: return lookup_color( 4, fg, boldp) + 1; // dark red
-	    case  3: return lookup_color( 2, fg, boldp) + 1; // dark green
-	    case  4: return lookup_color( 7, fg, boldp) + 1; // dark yellow
-	    case  5: return lookup_color( 1, fg, boldp) + 1; // dark blue
-	    case  6: return lookup_color( 5, fg, boldp) + 1; // dark magenta
-	    case  7: return lookup_color( 3, fg, boldp) + 1; // dark cyan
-	    case  8: return lookup_color( 8, fg, boldp) + 1; // light grey
-	    case  9: return lookup_color(12, fg, boldp) + 1; // dark grey
-	    case 10: return lookup_color(20, fg, boldp) + 1; // red
-	    case 11: return lookup_color(16, fg, boldp) + 1; // green
-	    case 12: return lookup_color(24, fg, boldp) + 1; // yellow
-	    case 13: return lookup_color(14, fg, boldp) + 1; // blue
-	    case 14: return lookup_color(22, fg, boldp) + 1; // magenta
-	    case 15: return lookup_color(18, fg, boldp) + 1; // cyan
-	    case 16: return lookup_color(26, fg, boldp) + 1; // white
+	    *boldp = TRUE;
+	    return (color->index & 7) + 1;
 	}
+	return 0;
     }
 
     if (t_colors >= 256)
@@ -3087,6 +3116,8 @@ handle_settermprop(
     switch (prop)
     {
 	case VTERM_PROP_TITLE:
+	    if (disable_vterm_title_for_testing)
+		break;
 	    strval = vim_strnsave((char_u *)value->string.str,
 							    value->string.len);
 	    if (strval == NULL)
@@ -3382,12 +3413,22 @@ handle_postponed_scrollback(term_T *term)
     limit_scrollback(term, &term->tl_scrollback, TRUE);
 }
 
+/*
+ * Called when the terminal wants to ring the system bell.
+ */
+    static int
+handle_bell(void *user UNUSED)
+{
+    vim_beep(BO_TERM);
+    return 0;
+}
+
 static VTermScreenCallbacks screen_callbacks = {
   handle_damage,	// damage
   handle_moverect,	// moverect
   handle_movecursor,	// movecursor
   handle_settermprop,	// settermprop
-  NULL,			// bell
+  handle_bell,		// bell
   handle_resize,	// resize
   handle_pushline,	// sb_pushline
   NULL			// sb_popline
@@ -4190,6 +4231,7 @@ set_vterm_palette(VTerm *vterm, long_u *rgb)
 	color.red = (unsigned)(rgb[index] >> 16);
 	color.green = (unsigned)(rgb[index] >> 8) & 255;
 	color.blue = (unsigned)rgb[index] & 255;
+	color.index = 0;
 	vterm_state_set_palette_color(state, index, &color);
     }
 }
@@ -4236,12 +4278,14 @@ init_vterm_ansi_colors(VTerm *vterm)
 {
     dictitem_T	*var = find_var((char_u *)"g:terminal_ansi_colors", NULL, TRUE);
 
-    if (var != NULL
-	    && (var->di_tv.v_type != VAR_LIST
-		|| var->di_tv.vval.v_list == NULL
-		|| var->di_tv.vval.v_list->lv_first == &range_list_item
-		|| set_ansi_colors_list(vterm, var->di_tv.vval.v_list) == FAIL))
-	semsg(_(e_invarg2), "g:terminal_ansi_colors");
+    if (var == NULL)
+	return;
+
+    if (var->di_tv.v_type != VAR_LIST
+	    || var->di_tv.vval.v_list == NULL
+	    || var->di_tv.vval.v_list->lv_first == &range_list_item
+	    || set_ansi_colors_list(vterm, var->di_tv.vval.v_list) == FAIL)
+	semsg(_(e_invalid_argument_str), "g:terminal_ansi_colors");
 }
 #endif
 
@@ -4307,13 +4351,13 @@ handle_drop_command(listitem_T *item)
 	if (p != NULL)
 	    get_bad_opt(p, &ea);
 
-	if (dict_find(dict, (char_u *)"bin", -1) != NULL)
+	if (dict_has_key(dict, "bin"))
 	    ea.force_bin = FORCE_BIN;
-	if (dict_find(dict, (char_u *)"binary", -1) != NULL)
+	if (dict_has_key(dict, "binary"))
 	    ea.force_bin = FORCE_BIN;
-	if (dict_find(dict, (char_u *)"nobin", -1) != NULL)
+	if (dict_has_key(dict, "nobin"))
 	    ea.force_bin = FORCE_NOBIN;
-	if (dict_find(dict, (char_u *)"nobinary", -1) != NULL)
+	if (dict_has_key(dict, "nobinary"))
 	    ea.force_bin = FORCE_NOBIN;
     }
 
@@ -4427,15 +4471,15 @@ sync_shell_dir(VTermStringFragment *frag)
     // remove HOSTNAME to get PWD
     while (*pos != '/' && offset < (int)frag->len)
     {
-        offset += 1;
-        pos += 1;
+	offset += 1;
+	pos += 1;
     }
 
     if (offset >= (int)frag->len)
     {
-        semsg(_(e_failed_to_extract_pwd_from_str_check_your_shell_config),
+	semsg(_(e_failed_to_extract_pwd_from_str_check_your_shell_config),
 								    frag->str);
-        return;
+	return;
     }
 
     new_dir = alloc(frag->len - offset + 1);
@@ -4675,6 +4719,62 @@ create_vterm(term_T *term, int rows, int cols)
 }
 
 /*
+ * Reset the terminal palette to its default value.
+ */
+    static void
+term_reset_palette(VTerm *vterm)
+{
+    VTermState	*state = vterm_obtain_state(vterm);
+    int		index;
+
+    for (index = 0; index < 16; index++)
+    {
+	VTermColor	color;
+
+	color.type = VTERM_COLOR_INDEXED;
+	ansi_color2rgb(index, &color.red, &color.green, &color.blue,
+		&color.index);
+	// The first valid index starts at 1.
+	color.index -= 1;
+
+	vterm_state_set_palette_color(state, index, &color);
+    }
+}
+
+    static void
+term_update_palette(term_T *term)
+{
+    if (term_use_palette()
+	    && (term->tl_palette != NULL
+		|| find_var((char_u *)"g:terminal_ansi_colors", NULL, TRUE)
+		!= NULL))
+    {
+	if (term->tl_palette != NULL)
+	    set_vterm_palette(term->tl_vterm, term->tl_palette);
+	else
+	    init_vterm_ansi_colors(term->tl_vterm);
+    }
+    else
+	term_reset_palette(term->tl_vterm);
+}
+
+/*
+ * Called when option 'termguicolors' is changed.
+ */
+    void
+term_update_palette_all()
+{
+    term_T *term;
+
+    FOR_ALL_TERMS(term)
+    {
+	if (term->tl_vterm == NULL)
+	    continue;
+	term_update_palette(term);
+    }
+}
+
+/*
  * Called when option 'background' or 'termguicolors' was set,
  * or when any highlight is changed.
  */
@@ -4862,7 +4962,7 @@ f_term_dumpwrite(typval_T *argvars, typval_T *rettv UNUSED)
     term = buf->b_term;
     if (term->tl_vterm == NULL)
     {
-	emsg(_("E958: Job already finished"));
+	emsg(_(e_job_already_finished));
 	return;
     }
 
@@ -4872,7 +4972,7 @@ f_term_dumpwrite(typval_T *argvars, typval_T *rettv UNUSED)
 
 	if (argvars[2].v_type != VAR_DICT)
 	{
-	    emsg(_(e_dictreq));
+	    emsg(_(e_dictionary_required));
 	    return;
 	}
 	d = argvars[2].vval.v_dict;
@@ -4888,13 +4988,13 @@ f_term_dumpwrite(typval_T *argvars, typval_T *rettv UNUSED)
 	return;
     if (mch_stat((char *)fname, &st) >= 0)
     {
-	semsg(_("E953: File exists: %s"), fname);
+	semsg(_(e_file_exists_str), fname);
 	return;
     }
 
     if (*fname == NUL || (fd = mch_fopen((char *)fname, WRITEBIN)) == NULL)
     {
-	semsg(_(e_notcreate), *fname == NUL ? (char_u *)_("<empty>") : fname);
+	semsg(_(e_cant_create_file_str), *fname == NUL ? (char_u *)_("<empty>") : fname);
 	return;
     }
 
@@ -5368,13 +5468,13 @@ term_load_dump(typval_T *argvars, typval_T *rettv, int do_diff)
 	fname2 = tv_get_string_buf_chk(&argvars[1], buf2);
     if (fname1 == NULL || (do_diff && fname2 == NULL))
     {
-	emsg(_(e_invarg));
+	emsg(_(e_invalid_argument));
 	return;
     }
     fd1 = mch_fopen((char *)fname1, READBIN);
     if (fd1 == NULL)
     {
-	semsg(_(e_notread), fname1);
+	semsg(_(e_cant_read_file_str), fname1);
 	return;
     }
     if (do_diff)
@@ -5383,7 +5483,7 @@ term_load_dump(typval_T *argvars, typval_T *rettv, int do_diff)
 	if (fd2 == NULL)
 	{
 	    fclose(fd1);
-	    semsg(_(e_notread), fname2);
+	    semsg(_(e_cant_read_file_str), fname2);
 	    return;
 	}
     }
@@ -5414,7 +5514,7 @@ term_load_dump(typval_T *argvars, typval_T *rettv, int do_diff)
 	// With "bufnr" argument: enter the window with this buffer and make it
 	// empty.
 	if (wp == NULL)
-	    semsg(_(e_invarg2), "bufnr");
+	    semsg(_(e_invalid_argument_str), "bufnr");
 	else
 	{
 	    buf = curbuf;
@@ -5992,7 +6092,7 @@ f_term_setsize(typval_T *argvars UNUSED, typval_T *rettv UNUSED)
     buf = term_get_buf(argvars, "term_setsize()");
     if (buf == NULL)
     {
-	emsg(_("E955: Not a terminal buffer"));
+	emsg(_(e_not_terminal_buffer));
 	return;
     }
     if (buf->b_term->tl_vterm == NULL)
@@ -6093,7 +6193,7 @@ f_term_gettty(typval_T *argvars, typval_T *rettv)
 		p = buf->b_term->tl_job->jv_tty_in;
 	    break;
 	default:
-	    semsg(_(e_invarg2), tv_get_string(&argvars[1]));
+	    semsg(_(e_invalid_argument_str), tv_get_string(&argvars[1]));
 	    return;
     }
     if (p != NULL)
@@ -6331,6 +6431,8 @@ f_term_setansicolors(typval_T *argvars, typval_T *rettv UNUSED)
 {
     buf_T	*buf;
     term_T	*term;
+    listitem_T	*li;
+    int		n = 0;
 
     if (in_vim9script()
 	    && (check_for_buffer_arg(argvars, 0) == FAIL
@@ -6346,12 +6448,41 @@ f_term_setansicolors(typval_T *argvars, typval_T *rettv UNUSED)
 
     if (argvars[1].v_type != VAR_LIST || argvars[1].vval.v_list == NULL)
     {
-	emsg(_(e_listreq));
+	emsg(_(e_list_required));
+	return;
+    }
+    if (argvars[1].vval.v_list->lv_first == &range_list_item
+	    || argvars[1].vval.v_list->lv_len != 16)
+    {
+	emsg(_(e_invalid_argument));
 	return;
     }
 
-    if (set_ansi_colors_list(term->tl_vterm, argvars[1].vval.v_list) == FAIL)
-	emsg(_(e_invarg));
+    if (term->tl_palette == NULL)
+	term->tl_palette = ALLOC_MULT(long_u, 16);
+    if (term->tl_palette == NULL)
+	return;
+
+    FOR_ALL_LIST_ITEMS(argvars[1].vval.v_list, li)
+    {
+	char_u		*color_name;
+	guicolor_T	guicolor;
+
+	color_name = tv_get_string_chk(&li->li_tv);
+	if (color_name == NULL)
+	    return;
+
+	guicolor = GUI_GET_COLOR(color_name);
+	if (guicolor == INVALCOLOR)
+	{
+	    semsg(_(e_cannot_allocate_color_str), color_name);
+	    return;
+	}
+
+	term->tl_palette[n++] = GUI_MCH_GET_RGB(guicolor);
+    }
+
+    term_update_palette(term);
 }
 #endif
 
@@ -6623,7 +6754,7 @@ dyn_conpty_init(int verbose)
     if (!has_conpty_working())
     {
 	if (verbose)
-	    emsg(_("E982: ConPTY is not available"));
+	    emsg(_(e_conpty_is_not_available));
 	return FAIL;
     }
 
@@ -6639,7 +6770,7 @@ dyn_conpty_init(int verbose)
 						conpty_entry[i].name)) == NULL)
 	{
 	    if (verbose)
-		semsg(_(e_loadfunc), conpty_entry[i].name);
+		semsg(_(e_could_not_load_library_function_str), conpty_entry[i].name);
 	    hKerneldll = NULL;
 	    return FAIL;
 	}
@@ -6674,8 +6805,8 @@ conpty_term_and_job_init(
     HANDLE	    i_ours = NULL;
     HANDLE	    o_ours = NULL;
 
-    ga_init2(&ga_cmd, (int)sizeof(char*), 20);
-    ga_init2(&ga_env, (int)sizeof(char*), 20);
+    ga_init2(&ga_cmd, sizeof(char*), 20);
+    ga_init2(&ga_env, sizeof(char*), 20);
 
     if (argvar->v_type == VAR_STRING)
     {
@@ -6689,7 +6820,7 @@ conpty_term_and_job_init(
     }
     if (cmd == NULL || *cmd == NUL)
     {
-	emsg(_(e_invarg));
+	emsg(_(e_invalid_argument));
 	goto failed;
     }
 
@@ -6808,12 +6939,13 @@ conpty_term_and_job_init(
     if (create_vterm(term, term->tl_rows, term->tl_cols) == FAIL)
 	goto failed;
 
-#if defined(FEAT_GUI) || defined(FEAT_TERMGUICOLORS)
-    if (opt->jo_set2 & JO2_ANSI_COLORS)
-	set_vterm_palette(term->tl_vterm, opt->jo_ansi_colors);
-    else
-	init_vterm_ansi_colors(term->tl_vterm);
-#endif
+    if (term_use_palette())
+    {
+	if (term->tl_palette != NULL)
+	    set_vterm_palette(term->tl_vterm, term->tl_palette);
+	else
+	    init_vterm_ansi_colors(term->tl_vterm);
+    }
 
     channel_set_job(channel, job, opt);
     job_set_options(job, opt);
@@ -6836,7 +6968,7 @@ conpty_term_and_job_init(
 	ch_log(channel, "Opening output file %s", fname);
 	term->tl_out_fd = mch_fopen((char *)fname, WRITEBIN);
 	if (term->tl_out_fd == NULL)
-	    semsg(_(e_notopen), fname);
+	    semsg(_(e_cant_open_file_str), fname);
     }
 
     return OK;
@@ -6979,7 +7111,7 @@ dyn_winpty_init(int verbose)
     if (!hWinPtyDLL)
     {
 	if (verbose)
-	    semsg(_(e_loadlib),
+	    semsg(_(e_could_not_load_library_str_str),
 		    (*p_winptydll != NUL ? p_winptydll : (char_u *)WINPTY_DLL),
 		    GetWin32Error());
 	return FAIL;
@@ -6991,7 +7123,7 @@ dyn_winpty_init(int verbose)
 					      winpty_entry[i].name)) == NULL)
 	{
 	    if (verbose)
-		semsg(_(e_loadfunc), winpty_entry[i].name);
+		semsg(_(e_could_not_load_library_function_str), winpty_entry[i].name);
 	    hWinPtyDLL = NULL;
 	    return FAIL;
 	}
@@ -7022,8 +7154,8 @@ winpty_term_and_job_init(
     garray_T	    ga_cmd, ga_env;
     char_u	    *cmd = NULL;
 
-    ga_init2(&ga_cmd, (int)sizeof(char*), 20);
-    ga_init2(&ga_env, (int)sizeof(char*), 20);
+    ga_init2(&ga_cmd, sizeof(char*), 20);
+    ga_init2(&ga_env, sizeof(char*), 20);
 
     if (argvar->v_type == VAR_STRING)
     {
@@ -7037,7 +7169,7 @@ winpty_term_and_job_init(
     }
     if (cmd == NULL || *cmd == NUL)
     {
-	emsg(_(e_invarg));
+	emsg(_(e_invalid_argument));
 	goto failed;
     }
 
@@ -7139,12 +7271,13 @@ winpty_term_and_job_init(
     if (create_vterm(term, term->tl_rows, term->tl_cols) == FAIL)
 	goto failed;
 
-#if defined(FEAT_GUI) || defined(FEAT_TERMGUICOLORS)
-    if (opt->jo_set2 & JO2_ANSI_COLORS)
-	set_vterm_palette(term->tl_vterm, opt->jo_ansi_colors);
-    else
-	init_vterm_ansi_colors(term->tl_vterm);
-#endif
+    if (term_use_palette())
+    {
+	if (term->tl_palette != NULL)
+	    set_vterm_palette(term->tl_vterm, term->tl_palette);
+	else
+	    init_vterm_ansi_colors(term->tl_vterm);
+    }
 
     channel_set_job(channel, job, opt);
     job_set_options(job, opt);
@@ -7172,7 +7305,7 @@ winpty_term_and_job_init(
 	ch_log(channel, "Opening output file %s", fname);
 	term->tl_out_fd = mch_fopen((char *)fname, WRITEBIN);
 	if (term->tl_out_fd == NULL)
-	    semsg(_(e_notopen), fname);
+	    semsg(_(e_cant_open_file_str), fname);
     }
 
     return OK;
@@ -7398,12 +7531,13 @@ term_and_job_init(
     if (create_vterm(term, term->tl_rows, term->tl_cols) == FAIL)
 	return FAIL;
 
-#if defined(FEAT_GUI) || defined(FEAT_TERMGUICOLORS)
-    if (opt->jo_set2 & JO2_ANSI_COLORS)
-	set_vterm_palette(term->tl_vterm, opt->jo_ansi_colors);
-    else
-	init_vterm_ansi_colors(term->tl_vterm);
-#endif
+    if (term_use_palette())
+    {
+	if (term->tl_palette != NULL)
+	    set_vterm_palette(term->tl_vterm, term->tl_palette);
+	else
+	    init_vterm_ansi_colors(term->tl_vterm);
+    }
 
     // This may change a string in "argvar".
     term->tl_job = job_start(argvar, argv, opt, &term->tl_job);

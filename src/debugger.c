@@ -22,7 +22,7 @@ static void do_showbacktrace(char_u *cmd);
 
 static char_u *debug_oldval = NULL;	// old and newval for debug expressions
 static char_u *debug_newval = NULL;
-static int     debug_expr   = 0;        // use debug_expr
+static int     debug_expr   = 0;	// use debug_expr
 
     int
 has_watchexpr(void)
@@ -88,7 +88,7 @@ do_debug(char_u *cmd)
     emsg_silent = FALSE;	// display error messages
     redir_off = TRUE;		// don't redirect debug commands
 
-    State = NORMAL;
+    State = MODE_NORMAL;
     debug_mode = TRUE;
 
     if (!debug_did_msg)
@@ -594,7 +594,7 @@ dbg_parsearg(
 	bp->dbg_type = DBG_EXPR;
     else
     {
-	semsg(_(e_invarg2), p);
+	semsg(_(e_invalid_argument_str), p);
 	return FAIL;
     }
     p = skipwhite(p + 4);
@@ -619,7 +619,7 @@ dbg_parsearg(
 	    || (here && *p != NUL)
 	    || (bp->dbg_type == DBG_FUNC && strstr((char *)p, "()") != NULL))
     {
-	semsg(_(e_invarg2), arg);
+	semsg(_(e_invalid_argument_str), arg);
 	return FAIL;
     }
 
@@ -815,7 +815,7 @@ ex_breakdel(exarg_T *eap)
     }
 
     if (todel < 0)
-	semsg(_("E161: Breakpoint not found: %s"), eap->arg);
+	semsg(_(e_breakpoint_not_found_str), eap->arg);
     else
     {
 	while (gap->ga_len > 0)
@@ -989,7 +989,12 @@ debuggy_find(
 		}
 		else
 		{
-		    if (typval_compare(tv, bp->dbg_val, EXPR_IS, FALSE) == OK
+		    // Use "==" instead of "is" for strings, that is what we
+		    // always have done.
+		    exprtype_T	type = tv->v_type == VAR_STRING
+							? EXPR_EQUAL : EXPR_IS;
+
+		    if (typval_compare(tv, bp->dbg_val, type, FALSE) == OK
 			    && tv->vval.v_number == FALSE)
 		    {
 			typval_T *v;
