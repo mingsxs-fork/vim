@@ -1545,6 +1545,10 @@ func Test_input_func()
   call feedkeys(":let c = input('name? ', \"x\\<BS>y\")\<CR>\<CR>", 'xt')
   call assert_equal('y', c)
 
+  " Test for using text with composing characters as default input
+  call feedkeys(":let c = input('name? ', \"ã̳\")\<CR>\<CR>", 'xt')
+  call assert_equal('ã̳', c)
+
   " Test for using <CR> as default input
   call feedkeys(":let c = input('name? ', \"\\<CR>\")\<CR>x\<CR>", 'xt')
   call assert_equal(' x', c)
@@ -2945,6 +2949,17 @@ func Test_exepath()
   else
     call assert_notequal(exepath('sh'), '')
   endif
+endfunc
+
+" Test for virtcol()
+func Test_virtcol()
+  enew!
+  call setline(1, "the\tquick\tbrown\tfox")
+  norm! 4|
+  call assert_equal(8, virtcol('.'))
+  call assert_equal(8, virtcol('.', v:false))
+  call assert_equal([4, 8], virtcol('.', v:true))
+  bwipe!
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

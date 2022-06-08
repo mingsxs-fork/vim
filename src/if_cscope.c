@@ -2182,11 +2182,10 @@ cs_read_prompt(int i)
 /*
  * Used to catch and ignore SIGALRM below.
  */
-    static RETSIGTYPE
+    static void
 sig_handler SIGDEFARG(sigarg)
 {
     // do nothing
-    SIGRETURN;
 }
 #endif
 

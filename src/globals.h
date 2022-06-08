@@ -75,7 +75,14 @@ EXTERN int	screen_cur_row INIT(= 0);
 EXTERN int	screen_cur_col INIT(= 0);
 
 #ifdef FEAT_SEARCH_EXTRA
-EXTERN match_T	screen_search_hl; // used for 'hlsearch' highlight matching
+// used for 'hlsearch' highlight matching
+EXTERN match_T	screen_search_hl;
+
+// last lnum where CurSearch was displayed
+EXTERN linenr_T search_hl_has_cursor_lnum INIT(= 0);
+
+// don't use 'hlsearch' temporarily
+EXTERN int	no_hlsearch INIT(= FALSE);
 #endif
 
 #ifdef FEAT_FOLDING
@@ -846,15 +853,10 @@ EXTERN int	secure INIT(= FALSE);
 				// allowed, e.g. when sourcing .exrc or .vimrc
 				// in current directory
 
-EXTERN int	textwinlock INIT(= 0);
+EXTERN int	textlock INIT(= 0);
 				// non-zero when changing text and jumping to
 				// another window or editing another buffer is
 				// not allowed
-
-EXTERN int	textlock INIT(= 0);
-				// non-zero when changing text is not allowed,
-				// jumping to another window is allowed,
-				// editing another buffer is not allowed.
 
 EXTERN int	curbuf_lock INIT(= 0);
 				// non-zero when the current buffer can't be
@@ -1421,11 +1423,6 @@ EXTERN char_u	wim_flags[4];
 # define STL_IN_ICON	1
 # define STL_IN_TITLE	2
 EXTERN int      stl_syntax INIT(= 0);
-#endif
-
-#ifdef FEAT_SEARCH_EXTRA
-// don't use 'hlsearch' temporarily
-EXTERN int	no_hlsearch INIT(= FALSE);
 #endif
 
 #if defined(FEAT_BEVAL) && !defined(NO_X11_INCLUDES)

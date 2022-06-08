@@ -994,6 +994,7 @@ static argcheck_T arg2_string_dict[] = {arg_string, arg_dict_any};
 static argcheck_T arg2_string_list_number[] = {arg_string, arg_list_number};
 static argcheck_T arg2_string_number[] = {arg_string, arg_number};
 static argcheck_T arg2_string_or_list_dict[] = {arg_string_or_list_any, arg_dict_any};
+static argcheck_T arg2_string_or_list_bool[] = {arg_string_or_list_any, arg_bool};
 static argcheck_T arg2_string_string_or_number[] = {arg_string, arg_string_or_nr};
 static argcheck_T arg3_any_list_dict[] = {NULL, arg_list_any, arg_dict_any};
 static argcheck_T arg3_buffer_lnum_lnum[] = {arg_buffer, arg_lnum, arg_lnum};
@@ -1455,6 +1456,20 @@ ret_getreg(int argcount,
 	return &t_list_string;
     }
     return &t_string;
+}
+
+    static type_T *
+ret_virtcol(int argcount,
+	type2_T *argtypes UNUSED,
+	type_T	**decl_type)
+{
+    // Assume that if the second argument is passed it's non-zero
+    if (argcount == 2)
+    {
+	*decl_type = &t_list_any;
+	return &t_list_number;
+    }
+    return &t_number;
 }
 
     static type_T *
@@ -2665,8 +2680,10 @@ static funcentry_T global_functions[] =
 			ret_first_arg,	    f_uniq},
     {"values",		1, 1, FEARG_1,	    arg1_dict_any,
 			ret_list_any,	    f_values},
-    {"virtcol",		1, 1, FEARG_1,	    arg1_string_or_list_any,
-			ret_number,	    f_virtcol},
+    {"virtcol",		1, 2, FEARG_1,	    arg2_string_or_list_bool,
+			ret_virtcol,	    f_virtcol},
+    {"virtcol2col",	3, 3, FEARG_1,	    arg3_number,
+			ret_number,	    f_virtcol2col},
     {"visualmode",	0, 1, 0,	    arg1_bool,
 			ret_string,	    f_visualmode},
     {"wildmenumode",	0, 0, 0,	    NULL,
@@ -8422,7 +8439,6 @@ search_cmn(typval_T *argvars, pos_T *match_pos, int *flagsp)
     int		retval = 0;	// default: FAIL
     long	lnum_stop = 0;
 #ifdef FEAT_RELTIME
-    proftime_T	tm;
     long	time_limit = 0;
 #endif
     int		options = SEARCH_KEEP;
@@ -8469,11 +8485,6 @@ search_cmn(typval_T *argvars, pos_T *match_pos, int *flagsp)
 	}
     }
 
-#ifdef FEAT_RELTIME
-    // Set the time limit, if there is one.
-    profile_setlimit(time_limit, &tm);
-#endif
-
     /*
      * This function does not accept SP_REPEAT and SP_RETCOUNT flags.
      * Check to make sure only those flags are set.
@@ -8492,7 +8503,7 @@ search_cmn(typval_T *argvars, pos_T *match_pos, int *flagsp)
     CLEAR_FIELD(sia);
     sia.sa_stop_lnum = (linenr_T)lnum_stop;
 #ifdef FEAT_RELTIME
-    sia.sa_tm = &tm;
+    sia.sa_tm = time_limit;
 #endif
 
     // Repeat until {skip} returns FALSE.
@@ -8938,18 +8949,10 @@ do_searchpair(
     int		use_skip = FALSE;
     int		err;
     int		options = SEARCH_KEEP;
-#ifdef FEAT_RELTIME
-    proftime_T	tm;
-#endif
 
     // Make 'cpoptions' empty, the 'l' flag should not be used here.
     save_cpo = p_cpo;
     p_cpo = empty_option;
-
-#ifdef FEAT_RELTIME
-    // Set the time limit, if there is one.
-    profile_setlimit(time_limit, &tm);
-#endif
 
     // Make two search patterns: start/end (pat2, for in nested pairs) and
     // start/middle/end (pat3, for the top pair).
@@ -8981,7 +8984,7 @@ do_searchpair(
 	CLEAR_FIELD(sia);
 	sia.sa_stop_lnum = lnum_stop;
 #ifdef FEAT_RELTIME
-	sia.sa_tm = &tm;
+	sia.sa_tm = time_limit;
 #endif
 	n = searchit(curwin, curbuf, &pos, NULL, dir, pat, 1L,
 						     options, RE_SEARCH, &sia);
@@ -10380,23 +10383,26 @@ f_type(typval_T *argvars, typval_T *rettv)
 }
 
 /*
- * "virtcol(string)" function
+ * "virtcol(string, bool)" function
  */
     static void
 f_virtcol(typval_T *argvars, typval_T *rettv)
 {
-    colnr_T	vcol = 0;
+    colnr_T	vcol_start = 0;
+    colnr_T	vcol_end = 0;
     pos_T	*fp;
     int		fnum = curbuf->b_fnum;
     int		len;
 
     if (in_vim9script()
-	    && check_for_string_or_list_arg(argvars, 0) == FAIL)
+	    && (check_for_string_or_list_arg(argvars, 0) == FAIL
+		|| (argvars[1].v_type != VAR_UNKNOWN
+		    && check_for_bool_arg(argvars, 1) == FAIL)))
 	return;
 
     fp = var2fpos(&argvars[0], FALSE, &fnum, FALSE);
     if (fp != NULL && fp->lnum <= curbuf->b_ml.ml_line_count
-						    && fnum == curbuf->b_fnum)
+	    && fnum == curbuf->b_fnum)
     {
 	// Limit the column to a valid value, getvvcol() doesn't check.
 	if (fp->col < 0)
@@ -10407,11 +10413,23 @@ f_virtcol(typval_T *argvars, typval_T *rettv)
 	    if (fp->col > len)
 		fp->col = len;
 	}
-	getvvcol(curwin, fp, NULL, NULL, &vcol);
-	++vcol;
+	getvvcol(curwin, fp, &vcol_start, NULL, &vcol_end);
+	++vcol_start;
+	++vcol_end;
     }
 
-    rettv->vval.v_number = vcol;
+    if (argvars[1].v_type != VAR_UNKNOWN && tv_get_bool(&argvars[1]))
+    {
+	if (rettv_list_alloc(rettv) == OK)
+	{
+	    list_append_number(rettv->vval.v_list, vcol_start);
+	    list_append_number(rettv->vval.v_list, vcol_end);
+	}
+	else
+	    rettv->vval.v_number = 0;
+    }
+    else
+	rettv->vval.v_number = vcol_end;
 }
 
 /*

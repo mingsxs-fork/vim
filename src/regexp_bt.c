@@ -3228,7 +3228,6 @@ restore_subexpr(regbehind_T *bp)
     static int
 regmatch(
     char_u	*scan,		    // Current node.
-    proftime_T	*tm UNUSED,	    // timeout limit or NULL
     int		*timed_out UNUSED)  // flag set on timeout or NULL
 {
   char_u	*next;		// Next node.
@@ -3237,9 +3236,6 @@ regmatch(
   regitem_T	*rp;
   int		no;
   int		status;		// one of the RA_ values:
-#ifdef FEAT_RELTIME
-  int		tm_count = 0;
-#endif
 
   // Make "regstack" and "backpos" empty.  They are allocated and freed in
   // bt_regexec_both() to reduce malloc()/free() calls.
@@ -3271,17 +3267,12 @@ regmatch(
 	    break;
 	}
 #ifdef FEAT_RELTIME
-	// Check for timeout once in a 100 times to avoid overhead.
-	if (tm != NULL && ++tm_count == 100)
+	if (*timeout_flag)
 	{
-	    tm_count = 0;
-	    if (profile_passed_limit(tm))
-	    {
-		if (timed_out != NULL)
-		    *timed_out = TRUE;
-		status = RA_FAIL;
-		break;
-	    }
+	    if (timed_out != NULL)
+		*timed_out = TRUE;
+	    status = RA_FAIL;
+	    break;
 	}
 #endif
 	status = RA_CONT;
@@ -4730,7 +4721,6 @@ regmatch(
 regtry(
     bt_regprog_T	*prog,
     colnr_T		col,
-    proftime_T		*tm,		// timeout limit or NULL
     int			*timed_out)	// flag set on timeout or NULL
 {
     rex.input = rex.line + col;
@@ -4740,7 +4730,7 @@ regtry(
     rex.need_clear_zsubexpr = (prog->reghasz == REX_SET);
 #endif
 
-    if (regmatch(prog->program + 1, tm, timed_out) == 0)
+    if (regmatch(prog->program + 1, timed_out) == 0)
 	return 0;
 
     cleanup_subexpr();
@@ -4815,7 +4805,6 @@ regtry(
 bt_regexec_both(
     char_u	*line,
     colnr_T	col,		// column to start looking for match
-    proftime_T	*tm,		// timeout limit or NULL
     int		*timed_out)	// flag set on timeout or NULL
 {
     bt_regprog_T    *prog;
@@ -4938,15 +4927,12 @@ bt_regexec_both(
 		    && (((enc_utf8 && utf_fold(prog->regstart) == utf_fold(c)))
 			|| (c < 255 && prog->regstart < 255 &&
 			    MB_TOLOWER(prog->regstart) == MB_TOLOWER(c)))))
-	    retval = regtry(prog, col, tm, timed_out);
+	    retval = regtry(prog, col, timed_out);
 	else
 	    retval = 0;
     }
     else
     {
-#ifdef FEAT_RELTIME
-	int tm_count = 0;
-#endif
 	// Messy cases:  unanchored match.
 	while (!got_int)
 	{
@@ -4973,7 +4959,7 @@ bt_regexec_both(
 		break;
 	    }
 
-	    retval = regtry(prog, col, tm, timed_out);
+	    retval = regtry(prog, col, timed_out);
 	    if (retval > 0)
 		break;
 
@@ -4990,16 +4976,11 @@ bt_regexec_both(
 	    else
 		++col;
 #ifdef FEAT_RELTIME
-	    // Check for timeout once in a twenty times to avoid overhead.
-	    if (tm != NULL && ++tm_count == 20)
+	    if (*timeout_flag)
 	    {
-		tm_count = 0;
-		if (profile_passed_limit(tm))
-		{
-		    if (timed_out != NULL)
-			*timed_out = TRUE;
-		    break;
-		}
+		if (timed_out != NULL)
+		    *timed_out = TRUE;
+		break;
 	    }
 #endif
 	}
@@ -5063,7 +5044,7 @@ bt_regexec_nl(
     rex.reg_icombine = FALSE;
     rex.reg_maxcol = 0;
 
-    return bt_regexec_both(line, col, NULL, NULL);
+    return bt_regexec_both(line, col, NULL);
 }
 
 /*
@@ -5081,11 +5062,10 @@ bt_regexec_multi(
     buf_T	*buf,		// buffer in which to search
     linenr_T	lnum,		// nr of line to start looking for match
     colnr_T	col,		// column to start looking for match
-    proftime_T	*tm,		// timeout limit or NULL
     int		*timed_out)	// flag set on timeout or NULL
 {
     init_regexec_multi(rmp, win, buf, lnum);
-    return bt_regexec_both(NULL, col, tm, timed_out);
+    return bt_regexec_both(NULL, col, timed_out);
 }
 
 /*

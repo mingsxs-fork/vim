@@ -4006,7 +4006,7 @@ ex_substitute(exarg_T *eap)
 		); ++lnum)
     {
 	nmatch = vim_regexec_multi(&regmatch, curwin, curbuf, lnum,
-						       (colnr_T)0, NULL, NULL);
+						       (colnr_T)0, NULL);
 	if (nmatch)
 	{
 	    colnr_T	copycol;
@@ -4414,14 +4414,16 @@ ex_substitute(exarg_T *eap)
 		subflags_save = subflags;
 
 		// Disallow changing text or switching window in an expression.
-		++textwinlock;
+		++textlock;
 #endif
 		// get length of substitution part
 		sublen = vim_regsub_multi(&regmatch,
 				    sub_firstlnum - regmatch.startpos[0].lnum,
-			       sub, sub_firstline, FALSE, magic_isset(), TRUE);
+			       sub, sub_firstline, 0,
+			       REGSUB_BACKSLASH
+				    | (magic_isset() ? REGSUB_MAGIC : 0));
 #ifdef FEAT_EVAL
-		--textwinlock;
+		--textlock;
 
 		// If getting the substitute string caused an error, don't do
 		// the replacement.
@@ -4524,13 +4526,15 @@ ex_substitute(exarg_T *eap)
 		new_end += copy_len;
 
 #ifdef FEAT_EVAL
-		++textwinlock;
+		++textlock;
 #endif
 		(void)vim_regsub_multi(&regmatch,
 				    sub_firstlnum - regmatch.startpos[0].lnum,
-				      sub, new_end, TRUE, magic_isset(), TRUE);
+				      sub, new_end, sublen,
+				      REGSUB_COPY | REGSUB_BACKSLASH
+					 | (magic_isset() ? REGSUB_MAGIC : 0));
 #ifdef FEAT_EVAL
-		--textwinlock;
+		--textlock;
 #endif
 		sub_nsubs++;
 		did_sub = TRUE;
@@ -4659,7 +4663,7 @@ skip:
 			|| nmatch_tl > 0
 			|| (nmatch = vim_regexec_multi(&regmatch, curwin,
 							curbuf, sub_firstlnum,
-						    matchcol, NULL, NULL)) == 0
+						    matchcol, NULL)) == 0
 			|| regmatch.startpos[0].lnum > 0)
 		{
 		    if (new_start != NULL)
@@ -4724,7 +4728,7 @@ skip:
 		    }
 		    if (nmatch == -1 && !lastone)
 			nmatch = vim_regexec_multi(&regmatch, curwin, curbuf,
-					  sub_firstlnum, matchcol, NULL, NULL);
+					  sub_firstlnum, matchcol, NULL);
 
 		    /*
 		     * 5. break if there isn't another match in this line
@@ -4988,7 +4992,7 @@ ex_global(exarg_T *eap)
     {
 	lnum = curwin->w_cursor.lnum;
 	match = vim_regexec_multi(&regmatch, curwin, curbuf, lnum,
-						       (colnr_T)0, NULL, NULL);
+						       (colnr_T)0, NULL);
 	if ((type == 'g' && match) || (type == 'v' && !match))
 	    global_exe_one(cmd, lnum);
     }
@@ -5001,7 +5005,7 @@ ex_global(exarg_T *eap)
 	{
 	    // a match on this line?
 	    match = vim_regexec_multi(&regmatch, curwin, curbuf, lnum,
-						       (colnr_T)0, NULL, NULL);
+						       (colnr_T)0, NULL);
 	    if (regmatch.regprog == NULL)
 		break;  // re-compiling regprog failed
 	    if ((type == 'g' && match) || (type == 'v' && !match))
