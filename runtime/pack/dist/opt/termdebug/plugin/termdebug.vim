@@ -2,7 +2,7 @@
 "
 " Author: Bram Moolenaar
 " Copyright: Vim license applies, see ":help license"
-" Last Change: 2022 May 23
+" Last Change: 2022 Nov 10
 "
 " WORK IN PROGRESS - The basics works stable, more to come
 " Note: In general you need at least GDB 7.12 because this provides the
@@ -534,6 +534,7 @@ func TermDebugSendCommand(cmd)
       Stop
       sleep 10m
     endif
+    " TODO: should we prepend CTRL-U to clear the command?
     call term_sendkeys(s:gdbbuf, a:cmd . "\r")
     if do_continue
       Continue
@@ -890,7 +891,14 @@ func s:InstallCommands()
   endif
 
   if has('menu') && &mouse != ''
-    call s:InstallWinbar()
+    " install the window toolbar by default, can be disabled in the config
+    let winbar = 1
+    if exists('g:termdebug_config')
+      let winbar = get(g:termdebug_config, 'winbar', 1)
+    endif
+    if winbar
+      call s:InstallWinbar()
+    endif
 
     let popup = 1
     if exists('g:termdebug_config')
@@ -1326,12 +1334,12 @@ func s:HandleCursor(msg)
 echomsg 'different fname: "' .. expand('%:p') .. '" vs "' .. fnamemodify(fname, ':p') .. '"'
 	augroup Termdebug
 	  " Always open a file read-only instead of showing the ATTENTION
-	  " prompt, since we are unlikely to want to edit the file.
+	  " prompt, since it is unlikely we want to edit the file.
 	  " The file may be changed but not saved, warn for that.
 	  au SwapExists * echohl WarningMsg
 		\ | echo 'Warning: file is being edited elsewhere'
 		\ | echohl None
-		\ | let v:swapchoice = '0'
+		\ | let v:swapchoice = 'o'
         augroup END
         if &modified
           " TODO: find existing window

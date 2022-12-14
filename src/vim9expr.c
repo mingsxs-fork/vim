@@ -8,7 +8,7 @@
  */
 
 /*
- * vim9cmds.c: Dealing with compiled function expressions
+ * vim9expr.c: Dealing with compiled function expressions
  */
 
 #define USING_FLOAT_STUFF
@@ -93,7 +93,8 @@ compile_member(int is_slice, int *keeping_dict, cctx_T *cctx)
     vartype = typep->type_curr->tt_type;
     idxtype = (((type2_T *)stack->ga_data) + stack->ga_len - 1)->type_curr;
     // If the index is a string, the variable must be a Dict.
-    if ((typep->type_curr == &t_any || typep->type_curr == &t_unknown)
+    if ((typep->type_curr->tt_type == VAR_ANY
+		|| typep->type_curr->tt_type == VAR_UNKNOWN)
 						       && idxtype == &t_string)
 	vartype = VAR_DICT;
     if (vartype == VAR_STRING || vartype == VAR_LIST || vartype == VAR_BLOB)
@@ -172,8 +173,8 @@ compile_member(int is_slice, int *keeping_dict, cctx_T *cctx)
 		return FAIL;
 	}
     }
-    else if (vartype == VAR_LIST || typep->type_curr == &t_any
-					     || typep->type_curr == &t_unknown)
+    else if (vartype == VAR_LIST || typep->type_curr->tt_type == VAR_ANY
+				 || typep->type_curr->tt_type == VAR_UNKNOWN)
     {
 	if (is_slice)
 	{
@@ -184,6 +185,18 @@ compile_member(int is_slice, int *keeping_dict, cctx_T *cctx)
 	    // a copy is made so the member type is no longer declared
 	    if (typep->type_decl->tt_type == VAR_LIST)
 		typep->type_decl = &t_list_any;
+
+	    // a copy is made, the composite is no longer "const"
+	    if (typep->type_curr->tt_flags & TTFLAG_CONST)
+	    {
+		type_T *type = copy_type(typep->type_curr, cctx->ctx_type_list);
+
+		if (type != typep->type_curr)  // did get a copy
+		{
+		    type->tt_flags &= ~(TTFLAG_CONST | TTFLAG_STATIC);
+		    typep->type_curr = type;
+		}
+	    }
 	}
 	else
 	{
@@ -222,6 +235,8 @@ compile_member(int is_slice, int *keeping_dict, cctx_T *cctx)
 	    case VAR_JOB:
 	    case VAR_CHANNEL:
 	    case VAR_INSTR:
+	    case VAR_CLASS:
+	    case VAR_OBJECT:
 	    case VAR_UNKNOWN:
 	    case VAR_ANY:
 	    case VAR_VOID:
@@ -233,6 +248,55 @@ compile_member(int is_slice, int *keeping_dict, cctx_T *cctx)
 	return FAIL;
     }
     return OK;
+}
+
+/*
+ * Compile ".member" coming after an object or class.
+ */
+    static int
+compile_class_object_index(cctx_T *cctx, char_u **arg, type_T *type)
+{
+    if (VIM_ISWHITE((*arg)[1]))
+    {
+	semsg(_(e_no_white_space_allowed_after_str_str), ".", *arg);
+	return FAIL;
+    }
+
+    ++*arg;
+    char_u *name = *arg;
+    char_u *name_end = find_name_end(name, NULL, NULL, FNE_CHECK_START);
+    if (name_end == name)
+	return FAIL;
+    size_t len = name_end - name;
+
+    class_T *cl = (class_T *)type->tt_member;
+    if (*name_end == '(')
+    {
+	// TODO
+    }
+    else if (type->tt_type == VAR_OBJECT)
+    {
+	for (int i = 0; i < cl->class_obj_member_count; ++i)
+	{
+	    objmember_T *m = &cl->class_obj_members[i];
+	    if (STRNCMP(name, m->om_name, len) == 0 && m->om_name[len] == NUL)
+	    {
+		generate_GET_OBJ_MEMBER(cctx, i, m->om_type);
+
+		*arg = name_end;
+		return OK;
+	    }
+	}
+
+	semsg(_(e_member_not_found_on_object_str_str), cl->class_name, name);
+    }
+    else
+    {
+	// TODO: class member
+	emsg("compile_class_object_index(): not handled");
+    }
+
+    return FAIL;
 }
 
 /*
@@ -313,7 +377,7 @@ compile_load_scriptvar(
 		// name.  If a '(' follows it must be a function.  Otherwise we
 		// don't know, it can be "script.Func".
 		if (cc == '(' || paren_follows_after_expr)
-		    res = generate_PUSHFUNC(cctx, auto_name, &t_func_any);
+		    res = generate_PUSHFUNC(cctx, auto_name, &t_func_any, TRUE);
 		else
 		    res = generate_AUTOLOAD(cctx, auto_name, &t_any);
 		vim_free(auto_name);
@@ -329,7 +393,7 @@ compile_load_scriptvar(
 		    char_u sid_name[MAX_FUNC_NAME_LEN];
 
 		    func_name_with_sid(exp_name, import->imp_sid, sid_name);
-		    res = generate_PUSHFUNC(cctx, sid_name, &t_func_any);
+		    res = generate_PUSHFUNC(cctx, sid_name, &t_func_any, TRUE);
 		}
 		else
 		    res = generate_OLDSCRIPT(cctx, ISN_LOADEXPORT, exp_name,
@@ -353,7 +417,7 @@ compile_load_scriptvar(
 	    if (ufunc != NULL)
 	    {
 		// function call or function reference
-		generate_PUSHFUNC(cctx, ufunc->uf_name, NULL);
+		generate_PUSHFUNC(cctx, ufunc->uf_name, NULL, TRUE);
 		return OK;
 	    }
 	    return FAIL;
@@ -387,7 +451,7 @@ generate_funcref(cctx_T *cctx, char_u *name, int has_g_prefix)
     if (func_needs_compiling(ufunc, compile_type)
 	      && compile_def_function(ufunc, TRUE, compile_type, NULL) == FAIL)
 	return FAIL;
-    return generate_PUSHFUNC(cctx, ufunc->uf_name, ufunc->uf_func_type);
+    return generate_PUSHFUNC(cctx, ufunc->uf_name, ufunc->uf_func_type, TRUE);
 }
 
 /*
@@ -451,8 +515,7 @@ compile_load(
 			      vim_free(name);
 			      return FAIL;
 			  }
-			  if (is_expr && ASCII_ISUPPER(*name)
-					     && find_func(name, FALSE) != NULL)
+			  if (is_expr && find_func(name, FALSE) != NULL)
 			      res = generate_funcref(cctx, name, FALSE);
 			  else
 			      res = compile_load_scriptvar(cctx, name,
@@ -497,6 +560,8 @@ compile_load(
 	int	    idx;
 	int	    gen_load = FALSE;
 	int	    gen_load_outer = 0;
+	int	    outer_loop_depth = -1;
+	int	    outer_loop_idx = -1;
 
 	name = vim_strnsave(*arg, end - *arg);
 	if (name == NULL)
@@ -522,7 +587,11 @@ compile_load(
 		type = lvar.lv_type;
 		idx = lvar.lv_idx;
 		if (lvar.lv_from_outer != 0)
+		{
 		    gen_load_outer = lvar.lv_from_outer;
+		    outer_loop_depth = lvar.lv_loop_depth;
+		    outer_loop_idx = lvar.lv_loop_idx;
+		}
 		else
 		    gen_load = TRUE;
 	    }
@@ -545,7 +614,8 @@ compile_load(
 	    res = generate_LOAD(cctx, ISN_LOAD, idx, NULL, type);
 	if (gen_load_outer > 0)
 	{
-	    res = generate_LOADOUTER(cctx, idx, gen_load_outer, type);
+	    res = generate_LOADOUTER(cctx, idx, gen_load_outer,
+				       outer_loop_depth, outer_loop_idx, type);
 	    cctx->ctx_outer_used = TRUE;
 	}
     }
@@ -611,19 +681,10 @@ compile_string(isn_T *isn, cctx_T *cctx, int str_offset)
 }
 
 /*
- * List of special functions for "compile_arguments".
- */
-typedef enum {
-    CA_NOT_SPECIAL,
-    CA_SEARCHPAIR,	    // {skip} in searchpair() and searchpairpos()
-    CA_SUBSTITUTE,	    // {sub} in substitute(), when prefixed with \=
-} ca_special_T;
-
-/*
  * Compile the argument expressions.
  * "arg" points to just after the "(" and is advanced to after the ")"
  */
-    static int
+    int
 compile_arguments(
 	char_u	     **arg,
 	cctx_T	     *cctx,
@@ -672,7 +733,7 @@ compile_arguments(
 	    // {sub} argument of substitute() can be compiled if it starts
 	    // with \=
 	    if (isn->isn_type == ISN_PUSHS && isn->isn_arg.string[0] == '\\'
-		    && isn->isn_arg.string[1] == '=')
+					      && isn->isn_arg.string[1] == '=')
 		compile_string(isn, cctx, 2);
 	}
 
@@ -843,6 +904,15 @@ compile_call(
 		}
 	    }
 
+	    if ((STRCMP(name, "writefile") == 0 && argcount > 2)
+		    || (STRCMP(name, "mkdir") == 0 && argcount > 1))
+	    {
+		// May have the "D" or "R" flag, reserve a variable for a
+		// deferred function call.
+		if (get_defer_var_idx(cctx) == 0)
+		    idx = -1;
+	    }
+
 	    if (idx >= 0)
 		res = generate_BCALL(cctx, idx, argcount, argcount_init == 1);
 	}
@@ -976,6 +1046,7 @@ compile_list(char_u **arg, cctx_T *cctx, ppconst_T *ppconst)
     int		count = 0;
     int		is_const;
     int		is_all_const = TRUE;	// reset when non-const encountered
+    int		must_end = FALSE;
 
     for (;;)
     {
@@ -994,6 +1065,11 @@ compile_list(char_u **arg, cctx_T *cctx, ppconst_T *ppconst)
 	    ++p;
 	    break;
 	}
+	if (must_end)
+	{
+	    semsg(_(e_missing_comma_in_list_str), p);
+	    return FAIL;
+	}
 	if (compile_expr0_ext(&p, cctx, &is_const) == FAIL)
 	    return FAIL;
 	if (!is_const)
@@ -1008,6 +1084,8 @@ compile_list(char_u **arg, cctx_T *cctx, ppconst_T *ppconst)
 		return FAIL;
 	    }
 	}
+	else
+	    must_end = TRUE;
 	whitep = p;
 	p = skipwhite(p);
     }
@@ -1084,6 +1162,7 @@ compile_lambda(char_u **arg, cctx_T *cctx)
 
 	*arg = ((char_u **)cctx->ctx_ufunc->uf_lines.ga_data)[cctx->ctx_lnum]
 									 + off;
+	evalarg.eval_using_cmdline = FALSE;
     }
 
     clear_evalarg(&evalarg, NULL);
@@ -1226,7 +1305,7 @@ compile_dict(char_u **arg, cctx_T *cctx, ppconst_T *ppconst)
 	    item = dict_find(d, key, -1);
 	    if (item != NULL)
 	    {
-		semsg(_(e_duplicate_key_in_dicitonary), key);
+		semsg(_(e_duplicate_key_in_dictionary), key);
 		goto failret;
 	    }
 	    item = dictitem_alloc(key);
@@ -1478,14 +1557,12 @@ apply_leader(typval_T *rettv, int numeric_only, char_u *start, char_u **end)
 	if (*p == '-' || *p == '+')
 	{
 	    // only '-' has an effect, for '+' we only check the type
-#ifdef FEAT_FLOAT
 	    if (rettv->v_type == VAR_FLOAT)
 	    {
 		if (*p == '-')
 		    rettv->vval.v_float = -rettv->vval.v_float;
 	    }
 	    else
-#endif
 	    {
 		varnumber_T	val;
 		int		error = FALSE;
@@ -1633,10 +1710,11 @@ bool_on_stack(cctx_T *cctx)
     if (type == &t_bool)
 	return OK;
 
-    if (type == &t_any
-	    || type == &t_unknown
-	    || type == &t_number
-	    || type == &t_number_bool)
+    if (type->tt_type == VAR_ANY
+	    || type->tt_type == VAR_UNKNOWN
+	    || type->tt_type == VAR_NUMBER
+	    || type == &t_number_bool
+	    || type == &t_const_number_bool)
 	// Number 0 and 1 are OK to use as a bool.  "any" could also be a bool.
 	// This requires a runtime type check.
 	return generate_COND2BOOL(cctx);
@@ -1768,17 +1846,19 @@ compile_subscript(
     for (;;)
     {
 	char_u *p = skipwhite(*arg);
+	type_T *type;
 
 	if (*p == NUL || (VIM_ISWHITE(**arg) && vim9_comment_start(p)))
 	{
 	    char_u *next = peek_next_line_from_context(cctx);
 
-	    // If a following line starts with "->{" or "->X" advance to that
-	    // line, so that a line break before "->" is allowed.
+	    // If a following line starts with "->{", "->(" or "->X" advance to
+	    // that line, so that a line break before "->" is allowed.
 	    // Also if a following line starts with ".x".
 	    if (next != NULL &&
 		    ((next[0] == '-' && next[1] == '>'
 				 && (next[2] == '{'
+				       || next[2] == '('
 				       || ASCII_ISALPHA(*skipwhite(next + 2))))
 		    || (next[0] == '.' && eval_isdictc(next[1]))))
 	    {
@@ -1794,7 +1874,6 @@ compile_subscript(
 	// is not a function call.
 	if (**arg == '(')
 	{
-	    type_T	*type;
 	    int		argcount = 0;
 
 	    if (generate_ppconst(cctx, ppconst) == FAIL)
@@ -1881,7 +1960,6 @@ compile_subscript(
 		int	    argcount = 1;
 		garray_T    *stack = &cctx->ctx_type_stack;
 		int	    type_idx_start = stack->ga_len;
-		type_T	    *type;
 		int	    expr_isn_start = cctx->ctx_instr.ga_len;
 		int	    expr_isn_end;
 		int	    arg_isn_count;
@@ -2065,6 +2143,18 @@ compile_subscript(
 		    return FAIL;
 	    }
 	    if (compile_member(is_slice, &keeping_dict, cctx) == FAIL)
+		return FAIL;
+	}
+	else if (*p == '.'
+		&& (type = get_type_on_stack(cctx, 0)) != &t_unknown
+		&& (type->tt_type == VAR_CLASS || type->tt_type == VAR_OBJECT))
+	{
+	    // class member: SomeClass.varname
+	    // class method: SomeClass.SomeMethod()
+	    // class constructor: SomeClass.new()
+	    // object member: someObject.varname, this.varname
+	    // object method: someObject.SomeMethod(), this.SomeMethod()
+	    if (compile_class_object_index(cctx, arg, type) == FAIL)
 		return FAIL;
 	}
 	else if (*p == '.' && p[1] != '.')
@@ -2709,7 +2799,7 @@ compile_expr5(char_u **arg, cctx_T *cctx, ppconst_T *ppconst)
 		if (tv2->v_type != VAR_NUMBER)
 		    emsg(_(e_bitshift_ops_must_be_number));
 		else
-		    emsg(_(e_bitshift_ops_must_be_postive));
+		    emsg(_(e_bitshift_ops_must_be_positive));
 		return FAIL;
 	    }
 

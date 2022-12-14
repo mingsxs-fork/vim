@@ -413,7 +413,7 @@ opFoldRange(
 	emsg(_(e_no_fold_found));
     // Force a redraw to remove the Visual highlighting.
     if (had_visual)
-	redraw_curbuf_later(INVERTED);
+	redraw_curbuf_later(UPD_INVERTED);
 }
 
 // openFold() {{{2
@@ -786,7 +786,7 @@ deleteFold(
 	emsg(_(e_no_fold_found));
 	// Force a redraw to remove the Visual highlighting.
 	if (had_visual)
-	    redraw_curbuf_later(INVERTED);
+	    redraw_curbuf_later(UPD_INVERTED);
     }
     else
 	// Deleting markers may make cursor column invalid.
@@ -875,7 +875,7 @@ foldUpdate(win_T *wp, linenr_T top, linenr_T bot)
 foldUpdateAll(win_T *win)
 {
     win->w_foldinvalid = TRUE;
-    redraw_win_later(win, NOT_VALID);
+    redraw_win_later(win, UPD_NOT_VALID);
 }
 
 // foldMoveTo() {{{2
@@ -1960,7 +1960,8 @@ get_foldtext(
 
 	    ++emsg_off; // handle exceptions, but don't display errors
 	    text = eval_to_string_safe(wp->w_p_fdt,
-		    was_set_insecurely((char_u *)"foldtext", OPT_LOCAL), TRUE);
+			   was_set_insecurely((char_u *)"foldtext", OPT_LOCAL),
+			   TRUE, TRUE);
 	    --emsg_off;
 
 	    if (text == NULL || did_emsg)

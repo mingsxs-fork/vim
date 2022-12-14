@@ -175,7 +175,8 @@ static void sig_winch SIGPROTOARG;
 #endif
 #if defined(SIGTSTP)
 static void sig_tstp SIGPROTOARG;
-// volatile because it is used in signal handler sig_tstp() and sigcont_handler().
+// volatile because it is used in signal handler sig_tstp() and
+// sigcont_handler().
 static volatile sig_atomic_t in_mch_suspend = FALSE;
 #endif
 #if defined(SIGINT)
@@ -251,7 +252,7 @@ static xsmp_config_T xsmp;
 /*
  * I have seen
  *  extern char *_sys_siglist[NSIG];
- * on Irix, Linux, NetBSD and Solaris. It contains a nice list of strings
+ * on Linux, NetBSD and Solaris. It contains a nice list of strings
  * that describe the signals. That is nearly what we want here.  But
  * autoconf does only check for sys_siglist (without the underscore), I
  * do not want to change everything today.... jw.
@@ -958,7 +959,7 @@ static volatile sig_atomic_t lc_signal;
 
 // TRUE when lc_jump_env is valid.
 // Volatile because it is used in signal handler deathtrap().
-static volatile sig_atomic_t lc_active INIT(= FALSE);
+static volatile sig_atomic_t lc_active = FALSE;
 
 /*
  * A simplistic version of setjmp() that only allows one level of using.
@@ -1227,7 +1228,7 @@ sigcont_handler SIGDEFARG(sigarg)
 	// back to a sane mode. We should redraw, but we can't really do that
 	// in a signal handler, do a redraw later.
 	after_sigcont();
-	redraw_later(CLEAR);
+	redraw_later(UPD_CLEAR);
 	cursor_on_force();
 	out_flush();
     }
@@ -2351,6 +2352,7 @@ mch_restore_title(int which)
 
 /*
  * Return TRUE if "name" looks like some xterm name.
+ * This matches "xterm.*", thus "xterm-256color", "xterm-kitty", etc.
  * Seiichi Sato mentioned that "mlterm" works like xterm.
  */
     int
@@ -2408,6 +2410,9 @@ use_xterm_mouse(void)
     return 0;
 }
 
+/*
+ * Return TRUE if "name" is an iris-ansi terminal name.
+ */
     int
 vim_is_iris(char_u *name)
 {
@@ -2417,33 +2422,19 @@ vim_is_iris(char_u *name)
 	    || STRCMP(name, "builtin_iris-ansi") == 0);
 }
 
+/*
+ * Return TRUE if "name" is a vt300-like terminal name.
+ */
     int
 vim_is_vt300(char_u *name)
 {
     if (name == NULL)
-	return FALSE;	       // actually all ANSI comp. terminals should be here
-    // catch VT100 - VT5xx
-    return ((STRNICMP(name, "vt", 2) == 0
-		&& vim_strchr((char_u *)"12345", name[2]) != NULL)
-	    || STRCMP(name, "builtin_vt320") == 0);
-}
-
-/*
- * Return TRUE if "name" is a terminal for which 'ttyfast' should be set.
- * This should include all windowed terminal emulators.
- */
-    int
-vim_is_fastterm(char_u *name)
-{
-    if (name == NULL)
 	return FALSE;
-    if (vim_is_xterm(name) || vim_is_vt300(name) || vim_is_iris(name))
-	return TRUE;
-    return (   STRNICMP(name, "hpterm", 6) == 0
-	    || STRNICMP(name, "sun-cmd", 7) == 0
-	    || STRNICMP(name, "screen", 6) == 0
-	    || STRNICMP(name, "tmux", 4) == 0
-	    || STRNICMP(name, "dtterm", 6) == 0);
+    // Actually all ANSI compatible terminals should be here.
+    // Catch at least VT1xx - VT5xx
+    return ((STRNICMP(name, "vt", 2) == 0
+			     && vim_strchr((char_u *)"12345", name[2]) != NULL)
+	    || STRCMP(name, "builtin_vt320") == 0);
 }
 
 /*
@@ -4499,29 +4490,35 @@ mch_call_shell_terminal(
 
     // Find a window to make "buf" curbuf.
     aucmd_prepbuf(&aco, buf);
-
-    clear_oparg(&oa);
-    while (term_use_loop())
+    if (curbuf == buf)
     {
-	if (oa.op_type == OP_NOP && oa.regname == NUL && !VIsual_active)
+	// Only when managed to find a window for "buf",
+	clear_oparg(&oa);
+	while (term_use_loop())
 	{
-	    // If terminal_loop() returns OK we got a key that is handled
-	    // in Normal model. We don't do redrawing anyway.
-	    if (terminal_loop(TRUE) == OK)
+	    if (oa.op_type == OP_NOP && oa.regname == NUL && !VIsual_active)
+	    {
+		// If terminal_loop() returns OK we got a key that is handled
+		// in Normal model. We don't do redrawing anyway.
+		if (terminal_loop(TRUE) == OK)
+		    normal_cmd(&oa, TRUE);
+	    }
+	    else
 		normal_cmd(&oa, TRUE);
 	}
-	else
-	    normal_cmd(&oa, TRUE);
+	retval = job->jv_exitval;
+	ch_log(NULL, "system command finished");
+
+	job_unref(job);
+
+	// restore curwin/curbuf and a few other things
+	aucmd_restbuf(&aco);
     }
-    retval = job->jv_exitval;
-    ch_log(NULL, "system command finished");
 
-    job_unref(job);
-
-    // restore curwin/curbuf and a few other things
-    aucmd_restbuf(&aco);
-
-    wait_return(TRUE);
+    // Only require pressing Enter when redrawing, to avoid that system() gets
+    // the hit-enter prompt even though it didn't output anything.
+    if (!RedrawingDisabled)
+	wait_return(TRUE);
     do_buffer(DOBUF_WIPE, DOBUF_FIRST, FORWARD, buf->b_fnum, TRUE);
 
 theend:
@@ -4750,7 +4747,7 @@ mch_call_shell_fork(
 	    reset_signals();		// handle signals normally
 	    UNBLOCK_SIGNALS(&curset);
 
-# ifdef FEAT_JOB_CHANNEL
+# ifdef FEAT_EVAL
 	    if (ch_log_active())
 	    {
 		ch_log(NULL, "closing channel log in the child process");
@@ -5007,8 +5004,7 @@ mch_call_shell_fork(
 					|| (!curbuf->b_p_bin
 					    && curbuf->b_p_fixeol)
 					|| (lnum != curbuf->b_no_eol_lnum
-					    && (lnum !=
-						    curbuf->b_ml.ml_line_count
+					    && (lnum != curbuf->b_ml.ml_line_count
 						    || curbuf->b_p_eol)))
 				    vim_ignored = write(toshell_fd, "\n",
 								   (size_t)1);
@@ -5017,7 +5013,6 @@ mch_call_shell_fork(
 				{
 				    // finished all the lines, close pipe
 				    close(toshell_fd);
-				    toshell_fd = -1;
 				    break;
 				}
 				lp = ml_get(lnum);
@@ -5103,7 +5098,8 @@ mch_call_shell_fork(
 			    }
 			}
 
-			term_replace_bs_del_keycode(ta_buf, ta_len, len);
+			// Remove Vim-specific codes from the input.
+			len = term_replace_keycodes(ta_buf, ta_len, len);
 
 			/*
 			 * For pipes: echo the typed characters.
@@ -5337,9 +5333,9 @@ finished:
 		long delay_msec = 1;
 
 		if (tmode == TMODE_RAW)
-		    // possibly disables modifyOtherKeys, so that the system
-		    // can recognize CTRL-C
-		    out_str(T_CTE);
+		    // Possibly disables modifyOtherKeys, so that the system
+		    // can recognize CTRL-C.
+		    out_str_t_TE();
 
 		/*
 		 * Similar to the loop above, but only handle X events, no
@@ -5383,7 +5379,7 @@ finished:
 
 		if (tmode == TMODE_RAW)
 		    // possibly enables modifyOtherKeys again
-		    out_str(T_CTI);
+		    out_str_t_TI();
 	    }
 # endif
 
@@ -5395,7 +5391,7 @@ finished:
 	     * child already exited.
 	     */
 	    if (wait_pid != pid)
-		wait_pid = wait4pid(pid, &status);
+		(void)wait4pid(pid, &status);
 
 # ifdef FEAT_GUI
 	    // Close slave side of pty.  Only do this after the child has
@@ -5469,11 +5465,12 @@ mch_call_shell(
     char_u	*cmd,
     int		options)	// SHELL_*, see vim.h
 {
-#ifdef FEAT_JOB_CHANNEL
+#ifdef FEAT_EVAL
     ch_log(NULL, "executing shell command: %s", cmd);
 #endif
 #if defined(FEAT_GUI) && defined(FEAT_TERMINAL)
-    if (gui.in_use && vim_strchr(p_go, GO_TERMINAL) != NULL)
+    if (gui.in_use && vim_strchr(p_go, GO_TERMINAL) != NULL
+					      && (options & SHELL_SILENT) == 0)
 	return mch_call_shell_terminal(cmd, options);
 #endif
 #ifdef USE_SYSTEM
@@ -5600,7 +5597,7 @@ mch_job_start(char **argv, job_T *job, jobopt_T *options, int is_terminal)
 	reset_signals();		// handle signals normally
 	UNBLOCK_SIGNALS(&curset);
 
-# ifdef FEAT_JOB_CHANNEL
+# ifdef FEAT_EVAL
 	if (ch_log_active())
 	    // close the log file in the child
 	    ch_logfile((char_u *)"", (char_u *)"");
@@ -6120,6 +6117,10 @@ WaitForCharOrMouse(long msec, int *interrupted, int ignore_input)
 		rest -= msec;
 	}
 # endif
+# ifdef FEAT_SOUND_MACOSX
+	// Invoke any pending sound callbacks.
+	process_cfrunloop();
+# endif
 # ifdef FEAT_SOUND_CANBERRA
 	// Invoke any pending sound callbacks.
 	if (has_sound_callback_in_queue())
@@ -6491,7 +6492,7 @@ select_eintr:
 #ifdef FEAT_JOB_CHANNEL
 	// also call when ret == 0, we may be polling a keep-open channel
 	if (ret >= 0)
-	    ret = channel_select_check(ret, &rfds, &wfds);
+	    (void)channel_select_check(ret, &rfds, &wfds);
 #endif
 
 #endif // HAVE_SELECT
@@ -8247,13 +8248,13 @@ xsmp_close(void)
 #endif // USE_XSMP
 
 #if defined(FEAT_RELTIME) || defined(PROTO)
-# if defined(HAVE_TIMER_CREATE) || defined(MACOS_X)
+# if defined(HAVE_TIMER_CREATE) || defined(PROTO)
 /*
  * Implement timeout with timer_create() and timer_settime().
  */
-static int	timeout_flag = FALSE;
-static timer_t	timer_id;
-static int	timer_created = FALSE;
+static volatile sig_atomic_t timeout_flag = FALSE;
+static timer_t		     timer_id;
+static int		     timer_created = FALSE;
 
 /*
  * Callback for when the timer expires.
@@ -8296,18 +8297,17 @@ stop_timeout(void)
  * This function is not expected to fail, but if it does it will still return a
  * valid flag pointer; the flag will remain stuck as FALSE .
  */
-    const int *
+    volatile sig_atomic_t *
 start_timeout(long msec)
 {
     struct itimerspec interval = {
-	    {0, 0},                                   // Do not repeat.
-	    {msec / 1000, (msec % 1000) * 1000000}};  // Timeout interval
+	    {0, 0},					// Do not repeat.
+	    {msec / 1000, (msec % 1000) * 1000000}};	// Timeout interval
     int ret;
 
     // This is really the caller's responsibility, but let's make sure the
     // previous timer has been stopped.
     stop_timeout();
-    timeout_flag = FALSE;
 
     if (!timer_created)
     {
@@ -8315,8 +8315,8 @@ start_timeout(long msec)
 
 	action.sigev_notify = SIGEV_THREAD;
 	action.sigev_notify_function = set_flag;
-        ret = timer_create(CLOCK_MONOTONIC, &action, &timer_id);
-        if (ret < 0)
+	ret = timer_create(CLOCK_MONOTONIC, &action, &timer_id);
+	if (ret < 0)
 	{
 	    semsg(_(e_could_not_set_timeout_str), strerror(errno));
 	    return &timeout_flag;
@@ -8324,6 +8324,10 @@ start_timeout(long msec)
 	timer_created = TRUE;
     }
 
+# ifdef FEAT_EVAL
+    ch_log(NULL, "setting timeout timer to %d sec %ld nsec",
+	       (int)interval.it_value.tv_sec, (long)interval.it_value.tv_nsec);
+# endif
     ret = timer_settime(timer_id, 0, &interval, NULL);
     if (ret < 0)
 	semsg(_(e_could_not_set_timeout_str), strerror(errno));
@@ -8331,17 +8335,29 @@ start_timeout(long msec)
     return &timeout_flag;
 }
 
-# else
+/*
+ * To be used before fork/exec: delete any created timer.
+ */
+    void
+delete_timer(void)
+{
+    if (timer_created)
+    {
+	timer_delete(timer_id);
+	timer_created = FALSE;
+    }
+}
+
+# else // HAVE_TIMER_CREATE
 
 /*
  * Implement timeout with setitimer()
  */
-static struct itimerval prev_interval;
-static struct sigaction prev_sigaction;
-static int		timeout_flag         = FALSE;
-static int		timer_active         = FALSE;
-static int		timer_handler_active = FALSE;
-static int		alarm_pending        = FALSE;
+static struct sigaction		prev_sigaction;
+static volatile sig_atomic_t	timeout_flag	     = FALSE;
+static int			timer_active	     = FALSE;
+static int			timer_handler_active = FALSE;
+static volatile sig_atomic_t	alarm_pending	     = FALSE;
 
 /*
  * Handle SIGALRM for a timeout.
@@ -8367,7 +8383,7 @@ stop_timeout(void)
     if (timer_active)
     {
 	timer_active = FALSE;
-	ret = setitimer(ITIMER_REAL, &disarm, &prev_interval);
+	ret = setitimer(ITIMER_REAL, &disarm, NULL);
 	if (ret < 0)
 	    // Should only get here as a result of coding errors.
 	    semsg(_(e_could_not_clear_timeout_str), strerror(errno));
@@ -8382,7 +8398,7 @@ stop_timeout(void)
 	    semsg(_(e_could_not_reset_handler_for_timeout_str),
 							      strerror(errno));
     }
-    timeout_flag = 0;
+    timeout_flag = FALSE;
 }
 
 /*
@@ -8396,12 +8412,12 @@ stop_timeout(void)
  * This function is not expected to fail, but if it does it will still return a
  * valid flag pointer; the flag will remain stuck as FALSE .
  */
-    const int *
+    volatile sig_atomic_t *
 start_timeout(long msec)
 {
     struct itimerval	interval = {
-	    {0, 0},                                // Do not repeat.
-	    {msec / 1000, (msec % 1000) * 1000}};  // Timeout interval
+	    {0, 0},				    // Do not repeat.
+	    {msec / 1000, (msec % 1000) * 1000}};   // Timeout interval
     struct sigaction	handle_alarm;
     int			ret;
     sigset_t		sigs;
@@ -8445,7 +8461,7 @@ start_timeout(long msec)
     timer_handler_active = TRUE;
 
     // Set up the interval timer once the alarm handler is in place.
-    ret = setitimer(ITIMER_REAL, &interval, &prev_interval);
+    ret = setitimer(ITIMER_REAL, &interval, NULL);
     if (ret < 0)
     {
 	// Should only get here as a result of coding errors.

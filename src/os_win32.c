@@ -202,22 +202,19 @@ static void vtp_sgr_bulk(int arg);
 static void vtp_sgr_bulks(int argc, int *argv);
 
 static int wt_working = 0;
-static void wt_init();
-
-static guicolor_T save_console_bg_rgb;
-static guicolor_T save_console_fg_rgb;
-static guicolor_T store_console_bg_rgb;
-static guicolor_T store_console_fg_rgb;
+static void wt_init(void);
 
 static int g_color_index_bg = 0;
 static int g_color_index_fg = 7;
 
 # ifdef FEAT_TERMGUICOLORS
+static guicolor_T save_console_bg_rgb;
+static guicolor_T save_console_fg_rgb;
+static guicolor_T store_console_bg_rgb;
+static guicolor_T store_console_fg_rgb;
+static int default_console_color_bg = 0x000000; // black
 static int default_console_color_fg = 0xc0c0c0; // white
-# endif
-
-# ifdef FEAT_TERMGUICOLORS
-#  define USE_VTP		(vtp_working && is_term_win32() && (p_tgc || (!p_tgc && t_colors >= 256)))
+#  define USE_VTP		(vtp_working && is_term_win32())
 #  define USE_WT		(wt_working)
 # else
 #  define USE_VTP		0
@@ -241,27 +238,7 @@ static int suppress_winsize = 1;	// don't fiddle with console
 static char_u *exe_path = NULL;
 
 static BOOL win8_or_later = FALSE;
-
-#if !defined(FEAT_GUI_MSWIN) || defined(VIMDLL)
-// Dynamic loading for portability
-typedef struct _DYN_CONSOLE_SCREEN_BUFFER_INFOEX
-{
-    ULONG cbSize;
-    COORD dwSize;
-    COORD dwCursorPosition;
-    WORD wAttributes;
-    SMALL_RECT srWindow;
-    COORD dwMaximumWindowSize;
-    WORD wPopupAttributes;
-    BOOL bFullscreenSupported;
-    COLORREF ColorTable[16];
-} DYN_CONSOLE_SCREEN_BUFFER_INFOEX, *PDYN_CONSOLE_SCREEN_BUFFER_INFOEX;
-typedef BOOL (WINAPI *PfnGetConsoleScreenBufferInfoEx)(HANDLE, PDYN_CONSOLE_SCREEN_BUFFER_INFOEX);
-static PfnGetConsoleScreenBufferInfoEx pGetConsoleScreenBufferInfoEx;
-typedef BOOL (WINAPI *PfnSetConsoleScreenBufferInfoEx)(HANDLE, PDYN_CONSOLE_SCREEN_BUFFER_INFOEX);
-static PfnSetConsoleScreenBufferInfoEx pSetConsoleScreenBufferInfoEx;
-static BOOL has_csbiex = FALSE;
-#endif
+static BOOL win11_or_later = FALSE;
 
 /*
  * Get version number including build number
@@ -273,11 +250,12 @@ typedef BOOL (WINAPI *PfnRtlGetVersion)(LPOSVERSIONINFOW);
     static DWORD
 get_build_number(void)
 {
-    OSVERSIONINFOW	osver = {sizeof(OSVERSIONINFOW)};
+    OSVERSIONINFOW	osver;
     HMODULE		hNtdll;
     PfnRtlGetVersion	pRtlGetVersion;
     DWORD		ver = MAKE_VER(0, 0, 0);
 
+    osver.dwOSVersionInfoSize = sizeof(OSVERSIONINFOW);
     hNtdll = GetModuleHandle("ntdll.dll");
     if (hNtdll != NULL)
     {
@@ -325,7 +303,7 @@ make_ambiwidth_event(
 read_console_input(
     HANDLE	    hInput,
     INPUT_RECORD    *lpBuffer,
-    DWORD	    nLength,
+    int		    nLength,
     LPDWORD	    lpEvents)
 {
     enum
@@ -353,7 +331,7 @@ read_console_input(
 
     if (s_dwMax == 0)
     {
-	if (!USE_WT && nLength == -1)
+	if (!vtp_working && nLength == -1)
 	    return PeekConsoleInputW(hInput, lpBuffer, 1, lpEvents);
 	GetNumberOfConsoleInputEvents(hInput, &dwEvents);
 	if (dwEvents == 0 && nLength == -1)
@@ -423,7 +401,7 @@ peek_console_input(
     DWORD	    nLength UNUSED,
     LPDWORD	    lpEvents)
 {
-    return read_console_input(hInput, lpBuffer, (DWORD)-1, lpEvents);
+    return read_console_input(hInput, lpBuffer, -1, lpEvents);
 }
 
 # ifdef FEAT_CLIENTSERVER
@@ -435,7 +413,7 @@ msg_wait_for_multiple_objects(
     DWORD    dwMilliseconds,
     DWORD    dwWakeMask)
 {
-    if (read_console_input(NULL, NULL, (DWORD)-2, NULL))
+    if (read_console_input(NULL, NULL, -2, NULL))
 	return WAIT_OBJECT_0;
     return MsgWaitForMultipleObjects(nCount, pHandles, fWaitAll,
 				     dwMilliseconds, dwWakeMask);
@@ -448,7 +426,7 @@ wait_for_single_object(
     HANDLE hHandle,
     DWORD dwMilliseconds)
 {
-    if (read_console_input(NULL, NULL, (DWORD)-2, NULL))
+    if (read_console_input(NULL, NULL, -2, NULL))
 	return WAIT_OBJECT_0;
     return WaitForSingleObject(hHandle, dwMilliseconds);
 }
@@ -760,8 +738,8 @@ dyn_libintl_init(void)
     }
 
     // The bind_textdomain_codeset() function is optional.
-    dyn_libintl_bind_textdomain_codeset = (void *)GetProcAddress(hLibintlDLL,
-						   "bind_textdomain_codeset");
+    dyn_libintl_bind_textdomain_codeset = (char *(*)(const char *, const char *))
+			GetProcAddress(hLibintlDLL, "bind_textdomain_codeset");
     if (dyn_libintl_bind_textdomain_codeset == NULL)
 	dyn_libintl_bind_textdomain_codeset =
 					 null_libintl_bind_textdomain_codeset;
@@ -769,7 +747,8 @@ dyn_libintl_init(void)
     // _wputenv() function for the libintl.dll is optional.
     hmsvcrt = find_imported_module_by_funcname(hLibintlDLL, "getenv");
     if (hmsvcrt != NULL)
-	dyn_libintl_wputenv = (void *)GetProcAddress(hmsvcrt, "_wputenv");
+	dyn_libintl_wputenv = (int (*)(const wchar_t *))
+					GetProcAddress(hmsvcrt, "_wputenv");
     if (dyn_libintl_wputenv == NULL || dyn_libintl_wputenv == _wputenv)
 	dyn_libintl_wputenv = null_libintl_wputenv;
 
@@ -914,6 +893,10 @@ PlatformId(void)
 	if ((ovi.dwMajorVersion == 6 && ovi.dwMinorVersion >= 2)
 		|| ovi.dwMajorVersion > 6)
 	    win8_or_later = TRUE;
+
+	if ((ovi.dwMajorVersion == 10 && ovi.dwBuildNumber >= 22000)
+		|| ovi.dwMajorVersion > 10)
+	    win11_or_later = TRUE;
 
 #ifdef HAVE_ACL
 	// Enable privilege for getting or setting SACLs.
@@ -1250,6 +1233,96 @@ mch_bevalterm_changed(void)
 # endif
 
 /*
+ * Win32 console mouse scroll event handler.
+ * Loosely based on the _OnMouseWheel() function in gui_w32.c
+ *
+ * This encodes the mouse scroll direction and keyboard modifiers into
+ * g_nMouseClick, and the mouse position into g_xMouse and g_yMouse
+ *
+ * The direction of the scroll is decoded from two fields of the win32 console
+ * mouse event record;
+ *    1. The axis - vertical or horizontal flag - from dwEventFlags, and
+ *    2. The sign - positive or negative (aka delta flag) - from dwButtonState
+ *
+ * When scroll axis is HORIZONTAL
+ *    -  If the high word of the dwButtonState member contains a positive
+ *	 value, the wheel was rotated to the right.
+ *    -  Otherwise, the wheel was rotated to the left.
+ * When scroll axis is VERTICAL
+ *    -  If the high word of the dwButtonState member contains a positive value,
+ *       the wheel was rotated forward, away from the user.
+ *    -  Otherwise, the wheel was rotated backward, toward the user.
+ */
+    static void
+decode_mouse_wheel(MOUSE_EVENT_RECORD *pmer)
+{
+    int	    horizontal = (pmer->dwEventFlags == MOUSE_HWHEELED);
+    int	    zDelta = pmer->dwButtonState;
+
+    g_xMouse = pmer->dwMousePosition.X;
+    g_yMouse = pmer->dwMousePosition.Y;
+
+# ifdef FEAT_PROP_POPUP
+    int lcol = g_xMouse;
+    int lrow = g_yMouse;
+    win_T *wp = mouse_find_win(&lrow, &lcol, FIND_POPUP);
+    if (wp != NULL && popup_is_popup(wp))
+    {
+	g_nMouseClick = -1;
+	cmdarg_T cap;
+	oparg_T oa;
+	CLEAR_FIELD(cap);
+	clear_oparg(&oa);
+	cap.oap = &oa;
+	if (horizontal)
+	{
+	    cap.arg = zDelta < 0 ? MSCR_LEFT : MSCR_RIGHT;
+	    cap.cmdchar = zDelta < 0 ? K_MOUSELEFT : K_MOUSERIGHT;
+	}
+	else
+	{
+	    cap.cmdchar = zDelta < 0 ? K_MOUSEUP : K_MOUSEDOWN;
+	    cap.arg = zDelta < 0 ? MSCR_UP : MSCR_DOWN;
+	}
+
+	// Mouse hovers over popup window, scroll it if possible.
+	mouse_row = wp->w_winrow;
+	mouse_col = wp->w_wincol;
+	nv_mousescroll(&cap);
+	update_screen(0);
+	setcursor();
+	out_flush();
+	return;
+    }
+# endif
+    mouse_col = g_xMouse;
+    mouse_row = g_yMouse;
+
+    char_u modifiers = 0;
+    char_u direction = 0;
+
+    // Decode the direction into an event that Vim can process
+    if (horizontal)
+	direction = zDelta >= 0 ? KE_MOUSELEFT : KE_MOUSERIGHT;
+    else
+	direction = zDelta >= 0 ? KE_MOUSEDOWN : KE_MOUSEUP;
+
+    // Decode the win32 console key modifiers into Vim mouse modifiers.
+    if (pmer->dwControlKeyState & SHIFT_PRESSED)
+	modifiers |= MOD_MASK_SHIFT; // MOUSE_SHIFT;
+    if (pmer->dwControlKeyState & (RIGHT_CTRL_PRESSED | LEFT_CTRL_PRESSED))
+	modifiers |= MOD_MASK_CTRL; // MOUSE_CTRL;
+    if (pmer->dwControlKeyState & (RIGHT_ALT_PRESSED  | LEFT_ALT_PRESSED))
+	modifiers |= MOD_MASK_ALT; // MOUSE_ALT;
+
+    // add (bitwise or) the scroll direction and the key modifier chars
+    // together.
+    g_nMouseClick = ((direction << 8) | modifiers);
+
+    return;
+}
+
+/*
  * Decode a MOUSE_EVENT.  If it's a valid event, return MOUSE_LEFT,
  * MOUSE_MIDDLE, or MOUSE_RIGHT for a click; MOUSE_DRAG for a mouse
  * move with a button held down; and MOUSE_RELEASE after a MOUSE_DRAG
@@ -1318,9 +1391,16 @@ decode_mouse_event(
 	return FALSE;
     }
 
-    // unprocessed mouse click?
+    // If there is an unprocessed mouse click drop this one.
     if (g_nMouseClick != -1)
 	return TRUE;
+
+    if (pmer->dwEventFlags == MOUSE_WHEELED
+				       || pmer->dwEventFlags == MOUSE_HWHEELED)
+    {
+	decode_mouse_wheel(pmer);
+	return TRUE;  // we now should have a mouse scroll in g_nMouseClick
+    }
 
     nButton = -1;
     g_xMouse = pmer->dwMousePosition.X;
@@ -1525,13 +1605,27 @@ decode_mouse_event(
     static void
 mch_set_cursor_shape(int thickness)
 {
-    CONSOLE_CURSOR_INFO ConsoleCursorInfo;
-    ConsoleCursorInfo.dwSize = thickness;
-    ConsoleCursorInfo.bVisible = s_cursor_visible;
+    if (vtp_working)
+    {
+	if (*T_CSI == NUL)
+	{
+	    // If 't_SI' is not set, use the default cursor styles.
+	    if (thickness < 50)
+		vtp_printf("\033[3 q");	// underline
+	    else
+		vtp_printf("\033[0 q");	// default
+	}
+    }
+    else
+    {
+	CONSOLE_CURSOR_INFO ConsoleCursorInfo;
+	ConsoleCursorInfo.dwSize = thickness;
+	ConsoleCursorInfo.bVisible = s_cursor_visible;
 
-    SetConsoleCursorInfo(g_hConOut, &ConsoleCursorInfo);
-    if (s_cursor_visible)
-	SetConsoleCursorPosition(g_hConOut, g_coord);
+	SetConsoleCursorInfo(g_hConOut, &ConsoleCursorInfo);
+	if (s_cursor_visible)
+	    SetConsoleCursorPosition(g_hConOut, g_coord);
+    }
 }
 
     void
@@ -1690,7 +1784,7 @@ WaitForChar(long msec, int ignore_input)
 		{
 		    // The screen is now messed up, must redraw the command
 		    // line and later all the windows.
-		    redraw_all_later(CLEAR);
+		    redraw_all_later(UPD_CLEAR);
 		    compute_cmdrow();
 		    redrawcmd();
 		}
@@ -1943,11 +2037,40 @@ mch_inchar(
 		fprintf(fdDump, "{%02x @ %d, %d}",
 			g_nMouseClick, g_xMouse, g_yMouse);
 # endif
-	    typeahead[typeaheadlen++] = ESC + 128;
-	    typeahead[typeaheadlen++] = 'M';
-	    typeahead[typeaheadlen++] = g_nMouseClick;
-	    typeahead[typeaheadlen++] = g_xMouse + '!';
-	    typeahead[typeaheadlen++] = g_yMouse + '!';
+	    char_u modifiers = ((char_u *)(&g_nMouseClick))[0];
+	    char_u scroll_dir = ((char_u *)(&g_nMouseClick))[1];
+
+	    if (scroll_dir == KE_MOUSEDOWN
+		    || scroll_dir == KE_MOUSEUP
+		    || scroll_dir == KE_MOUSELEFT
+		    || scroll_dir == KE_MOUSERIGHT)
+	    {
+		if (modifiers > 0)
+		{
+		    // use K_SPECIAL instead of CSI to make mappings work
+		    typeahead[typeaheadlen++] = K_SPECIAL;
+		    typeahead[typeaheadlen++] = KS_MODIFIER;
+		    typeahead[typeaheadlen++] = modifiers;
+		}
+		typeahead[typeaheadlen++] = CSI;
+		typeahead[typeaheadlen++] = KS_EXTRA;
+		typeahead[typeaheadlen++] = scroll_dir;
+	    }
+	    else
+	    {
+		typeahead[typeaheadlen++] = ESC + 128;
+		typeahead[typeaheadlen++] = 'M';
+		typeahead[typeaheadlen++] = g_nMouseClick;
+	    }
+
+	    // Pass the pointer coordinates of the mouse event in 2 bytes,
+	    // allowing for > 223 columns.  Both for click and scroll events.
+	    // This is the same as what is used for the GUI.
+	    typeahead[typeaheadlen++] = (char_u)(g_xMouse / 128 + ' ' + 1);
+	    typeahead[typeaheadlen++] = (char_u)(g_xMouse % 128 + ' ' + 1);
+	    typeahead[typeaheadlen++] = (char_u)(g_yMouse / 128 + ' ' + 1);
+	    typeahead[typeaheadlen++] = (char_u)(g_yMouse % 128 + ' ' + 1);
+
 	    g_nMouseClick = -1;
 	}
 	else
@@ -2099,7 +2222,7 @@ theend:
 	buf[len++] = typeahead[0];
 	mch_memmove(typeahead, typeahead + 1, --typeaheadlen);
     }
-# ifdef FEAT_JOB_CHANNEL
+# ifdef FEAT_EVAL
     if (len > 0)
     {
 	buf[len] = NUL;
@@ -2353,11 +2476,11 @@ theend:
  * worth allowing these to make debugging of issues easier.
  */
     static void
-bad_param_handler(const wchar_t *expression,
-    const wchar_t *function,
-    const wchar_t *file,
-    unsigned int line,
-    uintptr_t pReserved)
+bad_param_handler(const wchar_t *expression UNUSED,
+    const wchar_t *function UNUSED,
+    const wchar_t *file UNUSED,
+    unsigned int line UNUSED,
+    uintptr_t pReserved UNUSED)
 {
 }
 
@@ -2572,6 +2695,11 @@ SaveConsoleBuffer(
     }
     cb->IsValid = TRUE;
 
+    // VTP uses alternate screen buffer.
+    // No need to save buffer contents for restoration.
+    if (win11_or_later && vtp_working)
+	return TRUE;
+
     /*
      * Allocate a buffer large enough to hold the entire console screen
      * buffer.  If this ConsoleBuffer structure has already been initialized
@@ -2664,6 +2792,11 @@ RestoreConsoleBuffer(
     COORD BufferCoord;
     SMALL_RECT WriteRegion;
     int i;
+
+    // VTP uses alternate screen buffer.
+    // No need to restore buffer contents.
+    if (win11_or_later && vtp_working)
+	return TRUE;
 
     if (cb == NULL || !cb->IsValid)
 	return FALSE;
@@ -2817,7 +2950,11 @@ SaveConsoleTitleAndIcon(void)
 	return;
 
     // Extract the first icon contained in the Vim executable.
-    if (mch_icon_load((HANDLE *)&g_hVimIcon) == FAIL || g_hVimIcon == NULL)
+    if (
+# ifdef FEAT_LIBCALL
+	    mch_icon_load((HANDLE *)&g_hVimIcon) == FAIL ||
+# endif
+	    g_hVimIcon == NULL)
 	g_hVimIcon = ExtractIcon(NULL, (LPCSTR)exe_name, 0);
     if (g_hVimIcon != NULL)
 	g_fCanChangeIcon = TRUE;
@@ -2857,6 +2994,9 @@ mch_init_c(void)
 	create_conin();
     g_hConOut = GetStdHandle(STD_OUTPUT_HANDLE);
 
+    wt_init();
+    vtp_flag_init();
+    vtp_init();
 # ifdef FEAT_RESTORE_ORIG_SCREEN
     // Save the initial console buffer for later restoration
     SaveConsoleBuffer(&g_cbOrig);
@@ -2913,10 +3053,6 @@ mch_init_c(void)
 # ifdef FEAT_CLIPBOARD
     win_clip_init();
 # endif
-
-    vtp_flag_init();
-    vtp_init();
-    wt_init();
 }
 
 /*
@@ -3495,7 +3631,7 @@ mch_writable(char_u *name)
  * the allocated memory.
  */
     int
-mch_can_exe(char_u *name, char_u **path, int use_path)
+mch_can_exe(char_u *name, char_u **path, int use_path UNUSED)
 {
     return executable_exists((char *)name, path, TRUE, TRUE);
 }
@@ -4224,7 +4360,7 @@ sub_process_writer(LPVOID param)
 		      s == NULL ? l : (DWORD)(s - (lp + written)),
 		      &len, NULL);
 	}
-	if (len == (int)l)
+	if (len == l)
 	{
 	    // Finished a line, add a NL, unless this line should not have
 	    // one.
@@ -4274,7 +4410,6 @@ dump_pipe(int	    options,
     int		ret;
     DWORD	len;
     DWORD	toRead;
-    int		repeatCount;
 
     // we query the pipe to see if there is any data to read
     // to avoid to perform a blocking read
@@ -4285,11 +4420,9 @@ dump_pipe(int	    options,
 			&availableBytes,    // available bytes total
 			NULL);		    // byteLeft
 
-    repeatCount = 0;
     // We got real data in the pipe, read it
     while (ret != 0 && availableBytes > 0)
     {
-	repeatCount++;
 	toRead = (DWORD)(BUFLEN - *buffer_off);
 	toRead = availableBytes < toRead ? availableBytes : toRead;
 	ReadFile(g_hChildStd_OUT_Rd, buffer + *buffer_off, toRead , &len, NULL);
@@ -4531,7 +4664,7 @@ mch_system_piped(char *cmd, int options)
 			}
 		    }
 
-		    term_replace_bs_del_keycode(ta_buf, ta_len, len);
+		    len = term_replace_keycodes(ta_buf, ta_len, len);
 
 		    /*
 		     * For pipes: echo the typed characters.  For a pty this
@@ -4745,27 +4878,30 @@ mch_call_shell_terminal(
 
     // Find a window to make "buf" curbuf.
     aucmd_prepbuf(&aco, buf);
-
-    clear_oparg(&oa);
-    while (term_use_loop())
+    if (curbuf == buf)
     {
-	if (oa.op_type == OP_NOP && oa.regname == NUL && !VIsual_active)
+	// Only do this when a window was found for "buf".
+	clear_oparg(&oa);
+	while (term_use_loop())
 	{
-	    // If terminal_loop() returns OK we got a key that is handled
-	    // in Normal model. We don't do redrawing anyway.
-	    if (terminal_loop(TRUE) == OK)
+	    if (oa.op_type == OP_NOP && oa.regname == NUL && !VIsual_active)
+	    {
+		// If terminal_loop() returns OK we got a key that is handled
+		// in Normal model. We don't do redrawing anyway.
+		if (terminal_loop(TRUE) == OK)
+		    normal_cmd(&oa, TRUE);
+	    }
+	    else
 		normal_cmd(&oa, TRUE);
 	}
-	else
-	    normal_cmd(&oa, TRUE);
+	retval = job->jv_exitval;
+	ch_log(NULL, "system command finished");
+
+	job_unref(job);
+
+	// restore curwin/curbuf and a few other things
+	aucmd_restbuf(&aco);
     }
-    retval = job->jv_exitval;
-    ch_log(NULL, "system command finished");
-
-    job_unref(job);
-
-    // restore curwin/curbuf and a few other things
-    aucmd_restbuf(&aco);
 
     wait_return(TRUE);
     do_buffer(DOBUF_WIPE, DOBUF_FIRST, FORWARD, buf->b_fnum, TRUE);
@@ -4787,7 +4923,7 @@ mch_call_shell(
     int		tmode = cur_tmode;
     WCHAR	szShellTitle[512];
 
-#ifdef FEAT_JOB_CHANNEL
+#ifdef FEAT_EVAL
     ch_log(NULL, "executing shell command: %s", cmd);
 #endif
     // Change the title to reflect that we are in a subshell.
@@ -5625,7 +5761,9 @@ termcap_mode_start(void)
     if (g_fTermcapMode)
 	return;
 
-    if (!p_rs && USE_VTP)
+    // VTP uses alternate screen buffer.
+    // Switch to a new alternate screen buffer.
+    if (win11_or_later && p_rs && vtp_working)
 	vtp_printf("\033[?1049h");
 
     SaveConsoleBuffer(&g_cbNonTermcap);
@@ -5705,17 +5843,22 @@ termcap_mode_end(void)
 # endif
     RestoreConsoleBuffer(cb, p_rs);
     restore_console_color_rgb();
-    SetConsoleCursorInfo(g_hConOut, &g_cci);
 
-    if (p_rs || exiting)
+    // VTP uses alternate screen buffer.
+    // Switch back to main screen buffer.
+    if (exiting && win11_or_later && p_rs && vtp_working)
+	vtp_printf("\033[?1049l");
+
+    if (!USE_WT && (p_rs || exiting))
     {
 	/*
 	 * Clear anything that happens to be on the current line.
 	 */
 	coord.X = 0;
 	coord.Y = (SHORT) (p_rs ? cb->Info.dwCursorPosition.Y : (Rows - 1));
-	FillConsoleOutputCharacter(g_hConOut, ' ',
-		cb->Info.dwSize.X, coord, &dwDummy);
+	if (!vtp_working)
+	    FillConsoleOutputCharacter(g_hConOut, ' ',
+		    cb->Info.dwSize.X, coord, &dwDummy);
 	/*
 	 * The following is just for aesthetics.  If we are exiting without
 	 * restoring the screen, then we want to have a prompt string
@@ -5731,13 +5874,10 @@ termcap_mode_end(void)
 	 */
 	SetConsoleCursorPosition(g_hConOut, coord);
     }
-
-    if (!p_rs && USE_VTP)
-	vtp_printf("\033[?1049l");
-
+    SetConsoleCursorInfo(g_hConOut, &g_cci);
     g_fTermcapMode = FALSE;
 }
-#endif // FEAT_GUI_MSWIN
+#endif // !FEAT_GUI_MSWIN || VIMDLL
 
 
 #if defined(FEAT_GUI_MSWIN) && !defined(VIMDLL)
@@ -5759,7 +5899,7 @@ clear_chars(
     COORD coord,
     DWORD n)
 {
-    if (!USE_VTP)
+    if (!vtp_working)
     {
 	DWORD dwDummy;
 
@@ -5784,7 +5924,7 @@ clear_screen(void)
 {
     g_coord.X = g_coord.Y = 0;
 
-    if (!USE_VTP)
+    if (!vtp_working)
 	clear_chars(g_coord, Rows * Columns);
     else
     {
@@ -5803,7 +5943,7 @@ clear_to_end_of_display(void)
 {
     COORD save = g_coord;
 
-    if (!USE_VTP)
+    if (!vtp_working)
 	clear_chars(g_coord, (Rows - g_coord.Y - 1)
 					   * Columns + (Columns - g_coord.X));
     else
@@ -5826,7 +5966,7 @@ clear_to_end_of_line(void)
 {
     COORD save = g_coord;
 
-    if (!USE_VTP)
+    if (!vtp_working)
 	clear_chars(g_coord, Columns - g_coord.X);
     else
     {
@@ -5928,7 +6068,11 @@ insert_lines(unsigned cLines)
     clip.Bottom = g_srScrollRegion.Bottom;
 
     fill.Char.AsciiChar = ' ';
-    if (!USE_VTP)
+    if (!(vtp_working
+# ifdef FEAT_TERMGUICOLORS
+		&& (p_tgc || t_colors >= 256)
+# endif
+	 ))
 	fill.Attributes = g_attrCurrent;
     else
 	fill.Attributes = g_attrDefault;
@@ -5957,7 +6101,7 @@ insert_lines(unsigned cLines)
 	}
     }
 
-    if (USE_WT)
+    if (vtp_working)
     {
 	COORD coord;
 	int i;
@@ -5999,7 +6143,7 @@ delete_lines(unsigned cLines)
     clip.Bottom = g_srScrollRegion.Bottom;
 
     fill.Char.AsciiChar = ' ';
-    if (!USE_VTP)
+    if (!vtp_working)
 	fill.Attributes = g_attrCurrent;
     else
 	fill.Attributes = g_attrDefault;
@@ -6026,7 +6170,7 @@ delete_lines(unsigned cLines)
 	}
     }
 
-    if (USE_WT)
+    if (vtp_working)
     {
 	COORD coord;
 	int i;
@@ -6052,7 +6196,11 @@ gotoxy(
     if (x < 1 || x > (unsigned)Columns || y < 1 || y > (unsigned)Rows)
 	return;
 
-    if (!USE_VTP)
+    if (!(vtp_working
+# ifdef FEAT_TERMGUICOLORS
+		&& (p_tgc || t_colors >= 256)
+# endif
+	 ))
     {
 	// There are reports of double-width characters not displayed
 	// correctly.  This workaround should fix it, similar to how it's done
@@ -6098,7 +6246,7 @@ textcolor(WORD wAttr)
 {
     g_attrCurrent = (g_attrCurrent & 0xf0) + (wAttr & 0x0f);
 
-    if (!USE_VTP)
+    if (!vtp_working)
 	SetConsoleTextAttribute(g_hConOut, g_attrCurrent);
     else
 	vtp_sgr_bulk(wAttr);
@@ -6110,7 +6258,7 @@ textbackground(WORD wAttr)
 {
     g_attrCurrent = (g_attrCurrent & 0x0f) + ((wAttr & 0x0f) << 4);
 
-    if (!USE_VTP)
+    if (!vtp_working)
 	SetConsoleTextAttribute(g_hConOut, g_attrCurrent);
     else
 	vtp_sgr_bulk(wAttr);
@@ -6123,7 +6271,7 @@ textbackground(WORD wAttr)
     static void
 normvideo(void)
 {
-    if (!USE_VTP)
+    if (!vtp_working)
 	textattr(g_attrDefault);
     else
 	vtp_sgr_bulk(0);
@@ -6209,7 +6357,7 @@ visual_bell(void)
 			       coordOrigin, &dwDummy);
 
     Sleep(15);	    // wait for 15 msec
-    if (!USE_VTP)
+    if (!vtp_working)
 	WriteConsoleOutputAttribute(g_hConOut, oldattrs, Rows * Columns,
 				coordOrigin, &dwDummy);
     vim_free(oldattrs);
@@ -6224,7 +6372,7 @@ cursor_visible(BOOL fVisible)
 {
     s_cursor_visible = fVisible;
 
-    if (USE_VTP)
+    if (vtp_working)
 	vtp_printf("\033[?25%c", fVisible ? 'h' : 'l');
 
 # ifdef MCH_CURSOR_SHAPE
@@ -6296,7 +6444,11 @@ write_chars(
 	}
     }
 
-    if (!USE_VTP)
+    if (!(vtp_working
+# ifdef FEAT_TERMGUICOLORS
+	    && (p_tgc || t_colors >= 256)
+# endif
+	))
     {
 	FillConsoleOutputAttribute(g_hConOut, g_attrCurrent, cells,
 				    coord, &written);
@@ -6336,7 +6488,11 @@ write_chars(
     }
 
     // Cursor under VTP is always in the correct position, no need to reset.
-    if (!USE_VTP)
+    if (!(vtp_working
+# ifdef FEAT_TERMGUICOLORS
+		&& (p_tgc || t_colors >= 256)
+# endif
+	 ))
 	gotoxy(g_coord.X + 1, g_coord.Y + 1);
 
     return written;
@@ -6481,7 +6637,7 @@ mch_write(
 	// sequence may be inserted asynchronously.
 	if (len < 0)
 	{
-	    redraw_all_later(CLEAR);
+	    redraw_all_later(UPD_CLEAR);
 	    return;
 	}
 
@@ -6632,12 +6788,16 @@ notsgr:
 			normvideo();
 		    else if (argc == 1)
 		    {
-			if (USE_VTP)
-			    textcolor((WORD) arg1);
+			if (vtp_working
+# ifdef FEAT_TERMGUICOLORS
+				&& (p_tgc || t_colors >= 256)
+# endif
+			   )
+			    textcolor((WORD)arg1);
 			else
-			    textattr((WORD) arg1);
+			    textattr((WORD)arg1);
 		    }
-		    else if (USE_VTP)
+		    else if (vtp_working)
 			vtp_sgr_bulks(argc, args);
 		}
 		else if (argc == 2 && *p == 'H')
@@ -6766,6 +6926,21 @@ notsgr:
 		fputc('\n', fdDump);
 	    }
 # endif
+	}
+	else if (s[0] == ESC && len >= 3-1 && s[1] == '[')
+	{
+	    int l = 2;
+
+	    if (isdigit(s[l]))
+		l++;
+	    if (s[l] == ' ' && s[l + 1] == 'q')
+	    {
+		// DECSCUSR (cursor style) sequences
+		if (vtp_working)
+		    vtp_printf("%.*s", l + 2, s);   // Pass through
+		s += l + 2;
+		len -= l + 1;
+	    }
 	}
 	else
 	{
@@ -7800,6 +7975,12 @@ mch_setenv(char *var, char *value, int x UNUSED)
  * Not stable now.
  */
 #define CONPTY_STABLE_BUILD	    MAKE_VER(10, 0, 32767)  // T.B.D.
+// Notes:
+// Win 10 22H2 Final is build 19045, it's conpty is widely used.
+// Strangely, 19045 is newer but is a lower build number than the 2020 insider
+// preview which had a build 19587.  And, not sure how stable that was?
+// Win Server 2022 (May 10, 2022) is build 20348, its conpty is widely used.
+// Win 11 starts from build 22000, even though the major version says 10!
 
     static void
 vtp_flag_init(void)
@@ -7846,39 +8027,27 @@ vtp_flag_init(void)
     static void
 vtp_init(void)
 {
-    HMODULE hKerneldll;
-    DYN_CONSOLE_SCREEN_BUFFER_INFOEX csbi;
 # ifdef FEAT_TERMGUICOLORS
-    COLORREF fg;
-# endif
-
-    // Use functions supported from Vista
-    hKerneldll = GetModuleHandle("kernel32.dll");
-    if (hKerneldll != NULL)
+    if (!vtp_working)
     {
-	pGetConsoleScreenBufferInfoEx =
-		(PfnGetConsoleScreenBufferInfoEx)GetProcAddress(
-		hKerneldll, "GetConsoleScreenBufferInfoEx");
-	pSetConsoleScreenBufferInfoEx =
-		(PfnSetConsoleScreenBufferInfoEx)GetProcAddress(
-		hKerneldll, "SetConsoleScreenBufferInfoEx");
-	if (pGetConsoleScreenBufferInfoEx != NULL
-		&& pSetConsoleScreenBufferInfoEx != NULL)
-	    has_csbiex = TRUE;
+	CONSOLE_SCREEN_BUFFER_INFOEX csbi;
+	csbi.cbSize = sizeof(csbi);
+	GetConsoleScreenBufferInfoEx(g_hConOut, &csbi);
+	save_console_bg_rgb = (guicolor_T)csbi.ColorTable[g_color_index_bg];
+	save_console_fg_rgb = (guicolor_T)csbi.ColorTable[g_color_index_fg];
+	store_console_bg_rgb = save_console_bg_rgb;
+	store_console_fg_rgb = save_console_fg_rgb;
+
+	COLORREF bg;
+	bg = (COLORREF)csbi.ColorTable[g_color_index_bg];
+	bg = (GetRValue(bg) << 16) | (GetGValue(bg) << 8) | GetBValue(bg);
+	default_console_color_bg = bg;
+
+	COLORREF fg;
+	fg = (COLORREF)csbi.ColorTable[g_color_index_fg];
+	fg = (GetRValue(fg) << 16) | (GetGValue(fg) << 8) | GetBValue(fg);
+	default_console_color_fg = fg;
     }
-
-    csbi.cbSize = sizeof(csbi);
-    if (has_csbiex)
-	pGetConsoleScreenBufferInfoEx(g_hConOut, &csbi);
-    save_console_bg_rgb = (guicolor_T)csbi.ColorTable[g_color_index_bg];
-    save_console_fg_rgb = (guicolor_T)csbi.ColorTable[g_color_index_fg];
-    store_console_bg_rgb = save_console_bg_rgb;
-    store_console_fg_rgb = save_console_fg_rgb;
-
-# ifdef FEAT_TERMGUICOLORS
-    fg = (COLORREF)csbi.ColorTable[g_color_index_fg];
-    fg = (GetRValue(fg) << 16) | (GetGValue(fg) << 8) | GetBValue(fg);
-    default_console_color_fg = fg;
 # endif
 
     set_console_color_rgb();
@@ -7943,7 +8112,7 @@ vtp_sgr_bulks(
     if (argc == 0)
     {
 	sgrfgr = sgrbgr = -1;
-	vtp_printf("033[m");
+	vtp_printf("\033[m");
 	return;
     }
 
@@ -8066,13 +8235,7 @@ vtp_sgr_bulks(
     static void
 wt_init(void)
 {
-    wt_working = (mch_getenv("WT_SESSION") != NULL);
-}
-
-    int
-use_wt(void)
-{
-    return USE_WT;
+    wt_working = mch_getenv("WT_SESSION") != NULL;
 }
 
 # ifdef FEAT_TERMGUICOLORS
@@ -8091,38 +8254,39 @@ ctermtoxterm(
 set_console_color_rgb(void)
 {
 # ifdef FEAT_TERMGUICOLORS
-    DYN_CONSOLE_SCREEN_BUFFER_INFOEX csbi;
+    CONSOLE_SCREEN_BUFFER_INFOEX csbi;
     guicolor_T	fg, bg;
     int		ctermfg, ctermbg;
 
-    if (!USE_VTP)
+    if (!vtp_working)
 	return;
 
     get_default_console_color(&ctermfg, &ctermbg, &fg, &bg);
 
-    if (USE_WT)
+    if (p_tgc || t_colors >= 256)
     {
 	term_fg_rgb_color(fg);
 	term_bg_rgb_color(bg);
 	return;
     }
 
-    fg = (GetRValue(fg) << 16) | (GetGValue(fg) << 8) | GetBValue(fg);
-    bg = (GetRValue(bg) << 16) | (GetGValue(bg) << 8) | GetBValue(bg);
+    if (!conpty_working)
+    {
+	fg = (GetRValue(fg) << 16) | (GetGValue(fg) << 8) | GetBValue(fg);
+	bg = (GetRValue(bg) << 16) | (GetGValue(bg) << 8) | GetBValue(bg);
 
-    csbi.cbSize = sizeof(csbi);
-    if (has_csbiex)
-	pGetConsoleScreenBufferInfoEx(g_hConOut, &csbi);
+	csbi.cbSize = sizeof(csbi);
+	GetConsoleScreenBufferInfoEx(g_hConOut, &csbi);
 
-    csbi.cbSize = sizeof(csbi);
-    csbi.srWindow.Right += 1;
-    csbi.srWindow.Bottom += 1;
-    store_console_bg_rgb = csbi.ColorTable[g_color_index_bg];
-    store_console_fg_rgb = csbi.ColorTable[g_color_index_fg];
-    csbi.ColorTable[g_color_index_bg] = (COLORREF)bg;
-    csbi.ColorTable[g_color_index_fg] = (COLORREF)fg;
-    if (has_csbiex)
-	pSetConsoleScreenBufferInfoEx(g_hConOut, &csbi);
+	csbi.cbSize = sizeof(csbi);
+	csbi.srWindow.Right += 1;
+	csbi.srWindow.Bottom += 1;
+	store_console_bg_rgb = csbi.ColorTable[g_color_index_bg];
+	store_console_fg_rgb = csbi.ColorTable[g_color_index_fg];
+	csbi.ColorTable[g_color_index_bg] = (COLORREF)bg;
+	csbi.ColorTable[g_color_index_fg] = (COLORREF)fg;
+	SetConsoleScreenBufferInfoEx(g_hConOut, &csbi);
+    }
 # endif
 }
 
@@ -8139,6 +8303,7 @@ get_default_console_color(
     guicolor_T guibg = INVALCOLOR;
     int ctermfg = 0;
     int ctermbg = 0;
+    int dummynull = 0;
 
     id = syn_name2id((char_u *)"Normal");
     if (id > 0 && p_tgc)
@@ -8147,22 +8312,40 @@ get_default_console_color(
     {
 	ctermfg = -1;
 	if (id > 0)
-	    syn_id2cterm_bg(id, &ctermfg, &ctermbg);
-	guifg = ctermfg != -1 ? ctermtoxterm(ctermfg)
+	    syn_id2cterm_bg(id, &ctermfg, &dummynull);
+	if (vtp_working)
+	{
+	    cterm_normal_fg_gui_color = guifg =
+			    ctermfg != -1 ? ctermtoxterm(ctermfg) : INVALCOLOR;
+	    ctermfg = ctermfg < 0 ? 0 : ctermfg;
+	}
+	else
+	{
+	    guifg = ctermfg != -1 ? ctermtoxterm(ctermfg)
 						    : default_console_color_fg;
-	cterm_normal_fg_gui_color = guifg;
-	ctermfg = ctermfg < 0 ? 0 : ctermfg;
+	    cterm_normal_fg_gui_color = guifg;
+	    ctermfg = ctermfg < 0 ? 0 : ctermfg;
+	}
     }
     if (guibg == INVALCOLOR)
     {
 	ctermbg = -1;
 	if (id > 0)
-	    syn_id2cterm_bg(id, &ctermfg, &ctermbg);
-	cterm_normal_bg_gui_color = guibg =
+	    syn_id2cterm_bg(id, &dummynull, &ctermbg);
+	if (vtp_working)
+	{
+	    cterm_normal_bg_gui_color = guibg =
 			    ctermbg != -1 ? ctermtoxterm(ctermbg) : INVALCOLOR;
-
-	if (ctermbg < 0)
-	    ctermbg = 0;
+	    if (ctermbg < 0)
+		ctermbg = 0;
+	}
+	else
+	{
+	    guibg = ctermbg != -1 ? ctermtoxterm(ctermbg)
+						    : default_console_color_bg;
+	    cterm_normal_bg_gui_color = guibg;
+	    ctermbg = ctermbg < 0 ? 0 : ctermbg;
+	}
     }
 
     *cterm_fg = ctermfg;
@@ -8179,22 +8362,21 @@ get_default_console_color(
 reset_console_color_rgb(void)
 {
 # ifdef FEAT_TERMGUICOLORS
-    DYN_CONSOLE_SCREEN_BUFFER_INFOEX csbi;
 
-    if (USE_WT)
+    if (vtp_working)
 	return;
 
+    CONSOLE_SCREEN_BUFFER_INFOEX csbi;
+
     csbi.cbSize = sizeof(csbi);
-    if (has_csbiex)
-	pGetConsoleScreenBufferInfoEx(g_hConOut, &csbi);
+    GetConsoleScreenBufferInfoEx(g_hConOut, &csbi);
 
     csbi.cbSize = sizeof(csbi);
     csbi.srWindow.Right += 1;
     csbi.srWindow.Bottom += 1;
     csbi.ColorTable[g_color_index_bg] = (COLORREF)store_console_bg_rgb;
     csbi.ColorTable[g_color_index_fg] = (COLORREF)store_console_fg_rgb;
-    if (has_csbiex)
-	pSetConsoleScreenBufferInfoEx(g_hConOut, &csbi);
+    SetConsoleScreenBufferInfoEx(g_hConOut, &csbi);
 # endif
 }
 
@@ -8205,26 +8387,27 @@ reset_console_color_rgb(void)
 restore_console_color_rgb(void)
 {
 # ifdef FEAT_TERMGUICOLORS
-    DYN_CONSOLE_SCREEN_BUFFER_INFOEX csbi;
+    if (vtp_working)
+	return;
+
+    CONSOLE_SCREEN_BUFFER_INFOEX csbi;
 
     csbi.cbSize = sizeof(csbi);
-    if (has_csbiex)
-	pGetConsoleScreenBufferInfoEx(g_hConOut, &csbi);
+    GetConsoleScreenBufferInfoEx(g_hConOut, &csbi);
 
     csbi.cbSize = sizeof(csbi);
     csbi.srWindow.Right += 1;
     csbi.srWindow.Bottom += 1;
     csbi.ColorTable[g_color_index_bg] = (COLORREF)save_console_bg_rgb;
     csbi.ColorTable[g_color_index_fg] = (COLORREF)save_console_fg_rgb;
-    if (has_csbiex)
-	pSetConsoleScreenBufferInfoEx(g_hConOut, &csbi);
+    SetConsoleScreenBufferInfoEx(g_hConOut, &csbi);
 # endif
 }
 
     void
 control_console_color_rgb(void)
 {
-    if (USE_VTP)
+    if (vtp_working)
 	set_console_color_rgb();
     else
 	reset_console_color_rgb();
@@ -8332,13 +8515,13 @@ static int      timer_active = FALSE;
  * deleted. Ping-ponging between the two flags prevents this causing 'fake'
  * timeouts.
  */
-static int      timeout_flags[2];
-static int      flag_idx = 0;
-static int      *timeout_flag = &timeout_flags[0];
+static sig_atomic_t timeout_flags[2];
+static int	    timeout_flag_idx = 0;
+static sig_atomic_t *timeout_flag = &timeout_flags[0];
 
 
     static void CALLBACK
-set_flag(void *param, BOOLEAN unused2)
+set_flag(void *param, BOOLEAN unused2 UNUSED)
 {
     int *timeout_flag = (int *)param;
 
@@ -8353,7 +8536,7 @@ stop_timeout(void)
 {
     if (timer_active)
     {
-        BOOL ret = DeleteTimerQueueTimer(NULL, timer_handle, NULL);
+	BOOL ret = DeleteTimerQueueTimer(NULL, timer_handle, NULL);
 	timer_active = FALSE;
 	if (!ret && GetLastError() != ERROR_IO_PENDING)
 	{
@@ -8376,13 +8559,12 @@ stop_timeout(void)
  * This function is not expected to fail, but if it does it still returns a
  * valid flag pointer; the flag will remain stuck at zero.
  */
-    const int *
+    volatile sig_atomic_t *
 start_timeout(long msec)
 {
-    UINT interval = (UINT)msec;
     BOOL ret;
 
-    timeout_flag = &timeout_flags[flag_idx];
+    timeout_flag = &timeout_flags[timeout_flag_idx];
 
     stop_timeout();
     ret = CreateTimerQueueTimer(
@@ -8394,7 +8576,7 @@ start_timeout(long msec)
     }
     else
     {
-	flag_idx = (flag_idx + 1) % 2;
+	timeout_flag_idx = (timeout_flag_idx + 1) % 2;
 	timer_active = TRUE;
 	*timeout_flag = FALSE;
     }

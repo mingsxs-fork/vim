@@ -147,4 +147,16 @@ func Test_tabline_20_format_items_no_overrun()
   set showtabline& tabline&
 endfunc
 
+func Test_mouse_click_in_tab()
+  " This used to crash because TabPageIdxs[] was not initialized
+  let lines =<< trim END
+      tabnew
+      set mouse=a
+      exe "norm \<LeftMouse>"
+  END
+  call writefile(lines, 'Xclickscript', 'D')
+  call RunVim([], [], "-e -s -S Xclickscript -c qa")
+endfunc
+
+
 " vim: shiftwidth=2 sts=2 expandtab

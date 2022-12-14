@@ -45,6 +45,9 @@
 # undef F_BLANK
 #endif
 
+#ifdef HAVE_DUP
+# undef HAVE_DUP
+#endif
 #ifdef HAVE_STRFTIME
 # undef HAVE_STRFTIME
 #endif
@@ -76,6 +79,11 @@
 # define CODEC_ERROR_HANDLER "surrogateescape"
 #else
 # define CODEC_ERROR_HANDLER NULL
+#endif
+
+// Suppress Python 3.11 depreciations to see useful warnings
+#if defined(__clang__) && defined(__clang_major__) && __clang_major__ > 11
+# pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #endif
 
 // Python 3 does not support CObjects, always use Capsules
@@ -692,7 +700,12 @@ py3__PyObject_TypeCheck(PyObject *ob, PyTypeObject *type)
 {
     return Py_IS_TYPE(ob, type) || PyType_IsSubtype(Py_TYPE(ob), type);
 }
-#  define _PyObject_TypeCheck(o,t) py3__PyObject_TypeCheck(o,t)
+#  if PY_VERSION_HEX >= 0x030b00b3
+#   undef PyObject_TypeCheck
+#   define PyObject_TypeCheck(o,t) py3__PyObject_TypeCheck(o,t)
+#  else
+#   define _PyObject_TypeCheck(o,t) py3__PyObject_TypeCheck(o,t)
+#  endif
 # endif
 
 # ifdef MSWIN

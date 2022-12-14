@@ -1742,7 +1742,8 @@ nfa_regatom(void)
 			    break;
 			}
 		    }
-		    semsg(_(e_nfa_regexp_unknown_operator_percent_chr), no_Magic(c));
+		    semsg(_(e_nfa_regexp_unknown_operator_percent_chr),
+								  no_Magic(c));
 		    return FAIL;
 	    }
 	    break;
@@ -3942,6 +3943,7 @@ typedef struct
 	    char_u	*end;
 	} line[NSUBEXP];
     } list;
+    colnr_T	orig_start_col;  // list.multi[0].start_col without \zs
 } regsub_T;
 
 typedef struct
@@ -4013,7 +4015,8 @@ log_subexpr(regsub_T *sub)
 
     for (j = 0; j < sub->in_use; j++)
 	if (REG_MULTI)
-	    fprintf(log_fd, "*** group %d, start: c=%d, l=%d, end: c=%d, l=%d\n",
+	    fprintf(log_fd,
+		    "*** group %d, start: c=%d, l=%d, end: c=%d, l=%d\n",
 		    j,
 		    sub->list.multi[j].start_col,
 		    (int)sub->list.multi[j].start_lnum,
@@ -4097,9 +4100,12 @@ copy_sub(regsub_T *to, regsub_T *from)
     {
 	// Copy the match start and end positions.
 	if (REG_MULTI)
+	{
 	    mch_memmove(&to->list.multi[0],
 			&from->list.multi[0],
 			sizeof(struct multipos) * from->in_use);
+	    to->orig_start_col = from->orig_start_col;
+	}
 	else
 	    mch_memmove(&to->list.line[0],
 			&from->list.line[0],
@@ -4236,6 +4242,29 @@ sub_equal(regsub_T *sub1, regsub_T *sub2)
 
     return TRUE;
 }
+
+#ifdef FEAT_RELTIME
+/*
+ * Check if we are past the time limit, if there is one.
+ */
+    static int
+nfa_did_time_out(void)
+{
+    if (*timeout_flag)
+    {
+	if (nfa_timed_out != NULL)
+	{
+# ifdef FEAT_EVAL
+	    if (!*nfa_timed_out)
+		ch_log(NULL, "NFA regexp timed out");
+# endif
+	    *nfa_timed_out = TRUE;
+	}
+	return TRUE;
+    }
+    return FALSE;
+}
+#endif
 
 #ifdef ENABLE_LOG
     static void
@@ -4451,7 +4480,7 @@ state_in_list(
 /*
  * Add "state" and possibly what follows to state list ".".
  * Returns "subs_arg", possibly copied into temp_subs.
- * Returns NULL when recursiveness is too deep.
+ * Returns NULL when recursiveness is too deep or timed out.
  */
     static regsubs_T *
 addstate(
@@ -4479,6 +4508,11 @@ addstate(
     int			did_print = FALSE;
 #endif
     static int		depth = 0;
+
+#ifdef FEAT_RELTIME
+    if (nfa_did_time_out())
+	return NULL;
+#endif
 
     // This function is called recursively.  When the depth is too much we run
     // out of stack and crash, limit recursiveness here.
@@ -4762,7 +4796,7 @@ skip_add:
 		{
 		    sub->list.multi[subidx].start_lnum = rex.lnum;
 		    sub->list.multi[subidx].start_col =
-					  (colnr_T)(rex.input - rex.line + off);
+					 (colnr_T)(rex.input - rex.line + off);
 		}
 		sub->list.multi[subidx].end_lnum = -1;
 	    }
@@ -5591,9 +5625,9 @@ skip_to_start(int c, colnr_T *colp)
  * Returns zero for no match, 1 for a match.
  */
     static long
-find_match_text(colnr_T startcol, int regstart, char_u *match_text)
+find_match_text(colnr_T *startcol, int regstart, char_u *match_text)
 {
-    colnr_T col = startcol;
+    colnr_T col = *startcol;
     int	    c1, c2;
     int	    len1, len2;
     int	    match;
@@ -5632,6 +5666,7 @@ find_match_text(colnr_T startcol, int regstart, char_u *match_text)
 		rex.reg_startp[0] = rex.line + col;
 		rex.reg_endp[0] = rex.line + col + len2;
 	    }
+	    *startcol = col;
 	    return 1L;
 	}
 
@@ -5640,26 +5675,10 @@ find_match_text(colnr_T startcol, int regstart, char_u *match_text)
 	if (skip_to_start(regstart, &col) == FAIL)
 	    break;
     }
+
+    *startcol = col;
     return 0L;
 }
-
-#ifdef FEAT_RELTIME
-/*
- * Check if we are past the time limit, if there is one.
- * To reduce overhead, only check one in "count" times.
- */
-    static int
-nfa_did_time_out(void)
-{
-    if (*timeout_flag)
-    {
-	if (nfa_timed_out != NULL)
-	    *nfa_timed_out = TRUE;
-	return TRUE;
-    }
-    return FALSE;
-}
-#endif
 
 /*
  * Main matching routine.
@@ -5708,7 +5727,6 @@ nfa_regmatch(
     if (got_int)
 	return FALSE;
 #ifdef FEAT_RELTIME
-    // Check relatively often here, since this is the toplevel matching.
     if (nfa_did_time_out())
 	return FALSE;
 #endif
@@ -5766,6 +5784,7 @@ nfa_regmatch(
 	{
 	    m->norm.list.multi[0].start_lnum = rex.lnum;
 	    m->norm.list.multi[0].start_col = (colnr_T)(rex.input - rex.line);
+	    m->norm.orig_start_col = m->norm.list.multi[0].start_col;
 	}
 	else
 	    m->norm.list.line[0].start = rex.input;
@@ -6234,7 +6253,7 @@ nfa_regmatch(
 		}
 		else if (!vim_iswordc_buf(curc, rex.reg_buf)
 			   || (rex.input > rex.line
-				&& vim_iswordc_buf(rex.input[-1], rex.reg_buf)))
+			       && vim_iswordc_buf(rex.input[-1], rex.reg_buf)))
 		    result = FALSE;
 		if (result)
 		{
@@ -6364,7 +6383,7 @@ nfa_regmatch(
 
 	    case NFA_NEWL:
 		if (curc == NUL && !rex.reg_line_lbr && REG_MULTI
-						 && rex.lnum <= rex.reg_maxline)
+						&& rex.lnum <= rex.reg_maxline)
 		{
 		    go_to_nextline = TRUE;
 		    // Pass -1 for the offset, which means taking the position
@@ -6765,8 +6784,17 @@ nfa_regmatch(
 			result = col > t->state->val * ts;
 		    }
 		    if (!result)
-			result = nfa_re_num_cmp(t->state->val, op,
-				(long_u)win_linetabsize(wp, rex.line, col) + 1);
+		    {
+			linenr_T    lnum = REG_MULTI
+					    ? rex.reg_firstlnum + rex.lnum : 1;
+			long_u	    vcol;
+
+			if (REG_MULTI && (lnum <= 0
+				   || lnum > wp->w_buffer->b_ml.ml_line_count))
+			    lnum = 1;
+			vcol = (long_u)win_linetabsize(wp, lnum, rex.line, col);
+			result = nfa_re_num_cmp(t->state->val, op, vcol + 1);
+		    }
 		    if (result)
 		    {
 			add_here = TRUE;
@@ -7007,7 +7035,7 @@ nfa_regmatch(
 			&& rex.lnum == 0
 			&& clen != 0
 			&& (rex.reg_maxcol == 0
-			    || (colnr_T)(rex.input - rex.line) < rex.reg_maxcol))
+			  || (colnr_T)(rex.input - rex.line) < rex.reg_maxcol))
 		    || (nfa_endp != NULL
 			&& (REG_MULTI
 			    ? (rex.lnum < nfa_endp->se_u.pos.lnum
@@ -7061,8 +7089,12 @@ nfa_regmatch(
 		if (add)
 		{
 		    if (REG_MULTI)
+		    {
 			m->norm.list.multi[0].start_col =
 					 (colnr_T)(rex.input - rex.line) + clen;
+			m->norm.orig_start_col =
+					       m->norm.list.multi[0].start_col;
+		    }
 		    else
 			m->norm.list.line[0].start = rex.input + clen;
 		    if (addstate(nextlist, start->out, m, NULL, clen) == NULL)
@@ -7109,7 +7141,6 @@ nextchar:
 	if (got_int)
 	    break;
 #ifdef FEAT_RELTIME
-	// Check for timeout once in a twenty times to avoid overhead.
 	if (nfa_did_time_out())
 	    break;
 #endif
@@ -7199,6 +7230,8 @@ nfa_regtry(
 	    rex.reg_endpos[i].lnum = subs.norm.list.multi[i].end_lnum;
 	    rex.reg_endpos[i].col = subs.norm.list.multi[i].end_col;
 	}
+	if (rex.reg_mmatch != NULL)
+	    rex.reg_mmatch->rmm_matchcol = subs.norm.orig_start_col;
 
 	if (rex.reg_startpos[0].lnum < 0)
 	{
@@ -7359,7 +7392,14 @@ nfa_regexec_both(
 	// If match_text is set it contains the full text that must match.
 	// Nothing else to try. Doesn't handle combining chars well.
 	if (prog->match_text != NULL && !rex.reg_icombine)
-	    return find_match_text(col, prog->regstart, prog->match_text);
+	{
+	    retval = find_match_text(&col, prog->regstart, prog->match_text);
+	    if (REG_MULTI)
+		rex.reg_mmatch->rmm_matchcol = col;
+	    else
+		rex.reg_match->rm_matchcol = col;
+	    return retval;
+	}
     }
 
     // If the start column is past the maximum column: no need to try.
@@ -7400,6 +7440,10 @@ theend:
 	{
 	    if (rex.reg_match->endp[0] < rex.reg_match->startp[0])
 		rex.reg_match->endp[0] = rex.reg_match->startp[0];
+
+	    // startpos[0] may be set by "\zs", also return the column where
+	    // the whole pattern matched.
+	    rex.reg_match->rm_matchcol = col;
 	}
     }
 

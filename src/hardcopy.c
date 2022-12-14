@@ -293,6 +293,7 @@ prt_get_attr(
     pattr->italic = (highlight_has_attr(hl_id, HL_ITALIC, modec) != NULL);
     pattr->underline = (highlight_has_attr(hl_id, HL_UNDERLINE, modec) != NULL);
     pattr->undercurl = (highlight_has_attr(hl_id, HL_UNDERCURL, modec) != NULL);
+    // TODO: HL_UNDERDOUBLE, HL_UNDERDOTTED, HL_UNDERDASHED
 
 # if defined(FEAT_GUI) || defined(FEAT_TERMGUICOLORS)
     if (USE_24BIT)
@@ -470,7 +471,6 @@ prt_header(
     if (*p_header != NUL)
     {
 	linenr_T	tmp_lnum, tmp_topline, tmp_botline;
-	int		use_sandbox = FALSE;
 
 	/*
 	 * Need to (temporarily) set current line number and first/last line
@@ -486,12 +486,8 @@ prt_header(
 	curwin->w_botline = lnum + 63;
 	printer_page_num = pagenum;
 
-# ifdef FEAT_EVAL
-	use_sandbox = was_set_insecurely((char_u *)"printheader", 0);
-# endif
-	build_stl_str_hl(curwin, tbuf, (size_t)(width + IOSIZE),
-						  p_header, use_sandbox,
-						  ' ', width, NULL, NULL);
+	build_stl_str_hl(curwin, tbuf, (size_t)(width + IOSIZE), p_header,
+			   (char_u *)"printheader", 0, ' ', width, NULL, NULL);
 
 	// Reset line numbers
 	curwin->w_cursor.lnum = tmp_lnum;

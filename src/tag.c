@@ -202,7 +202,7 @@ free_tagfunc_option(void)
 
 #if defined(FEAT_EVAL) || defined(PROTO)
 /*
- * Mark the global 'tagfunc' callback with 'copyID' so that it is not garbage
+ * Mark the global 'tagfunc' callback with "copyID" so that it is not garbage
  * collected.
  */
     int
@@ -281,6 +281,7 @@ do_tag(
     char_u	*buf_ffname = curbuf->b_ffname;	    // name to use for
 						    // priority computation
     int		use_tfu = 1;
+    char_u	*tofree = NULL;
 
     // remember the matches for the last used tag
     static int		num_matches = 0;
@@ -630,7 +631,12 @@ do_tag(
 	 * When desired match not found yet, try to find it (and others).
 	 */
 	if (use_tagstack)
-	    name = tagstack[tagstackidx].tagname;
+	{
+	    // make a copy, the tagstack may change in 'tagfunc'
+	    name = vim_strsave(tagstack[tagstackidx].tagname);
+	    vim_free(tofree);
+	    tofree = name;
+	}
 #if defined(FEAT_QUICKFIX)
 	else if (g_do_tagpreview != 0)
 	    name = ptag_entry.tagname;
@@ -683,6 +689,16 @@ do_tag(
 		    && new_num_matches < max_num_matches)
 		max_num_matches = MAXCOL; // If less than max_num_matches
 					  // found: all matches found.
+
+	    // A tag function may do anything, which may cause various
+	    // information to become invalid.  At least check for the tagstack
+	    // to still be the same.
+	    if (tagstack != curwin->w_tagstack)
+	    {
+		emsg(_(e_window_unexpectedly_close_while_searching_for_tags));
+		FreeWild(new_num_matches, new_matches);
+		break;
+	    }
 
 	    // If there already were some matches for the same name, move them
 	    // to the start.  Avoids that the order changes when using
@@ -922,6 +938,7 @@ end_do_tag:
     g_do_tagpreview = 0;	// don't do tag preview next time
 # endif
 
+    vim_free(tofree);
 #ifdef FEAT_CSCOPE
     return jumped_to_tag;
 #else
@@ -1756,7 +1773,7 @@ findtags_in_help_init(findtags_state_T *st)
     int		i;
     char_u	*s;
 
-    // Keep 'en' as the language if the file extension is '.txt'
+    // Keep "en" as the language if the file extension is ".txt"
     if (st->is_txt)
 	STRCPY(st->help_lang, "en");
     else
@@ -1866,9 +1883,9 @@ emacs_tags_incstack_free(void)
 /*
  * Emacs tags line with CTRL-L: New file name on next line.
  * The file name is followed by a ','.  Remember etag file name in ebuf.
- * The FILE pointer to the tags file is stored in 'st->fp'.  If another tags
+ * The FILE pointer to the tags file is stored in "st->fp".  If another tags
  * file is included, then the FILE pointer to the new tags file is stored in
- * 'st->fp'. The old file pointer is saved in incstack.
+ * "st->fp". The old file pointer is saved in incstack.
  */
     static void
 emacs_tags_new_filename(findtags_state_T *st)
@@ -2114,7 +2131,7 @@ findtags_get_next_line(findtags_state_T *st, tagsearch_info_T *sinfo_p)
 }
 
 /*
- * Parse a tags file header line in 'st->lbuf'.
+ * Parse a tags file header line in "st->lbuf".
  * Returns TRUE if the current line in st->lbuf is not a tags header line and
  * should be parsed as a regular tag line. Returns FALSE if the line is a
  * header line and the next header line should be read.
@@ -2237,10 +2254,16 @@ findtags_start_state_handler(
 
 /*
  * Parse a tag line read from a tags file.
- * Returns OK if a tags line is successfully parsed.
- * Returns FAIL if a format error is encountered.
+ * Also compares the tag name in "tagpp->tagname" with a search pattern in
+ * "st->orgpat->head" as a quick check if the tag may match.
+ * Returns:
+ * - TAG_MATCH_SUCCESS if the tag may match
+ * - TAG_MATCH_FAIL if the tag doesn't match
+ * - TAG_MATCH_NEXT to look for the next matching tag (used in a binary search)
+ * - TAG_MATCH_STOP if all the tags are processed without a match. Uses the
+ *   values in "margs" for doing the comparison.
  */
-    static int
+    static tagmatch_status_T
 findtags_parse_line(
     findtags_state_T		*st,
     tagptrs_T			*tagpp,
@@ -2407,14 +2430,12 @@ findtags_matchargs_init(findtags_match_args_T *margs, int flags)
 }
 
 /*
- * Compares the tag name in 'tagpp->tagname' with a search pattern in
- * 'st->orgpat.head'.
- * Returns TAG_MATCH_SUCCESS if the tag matches, TAG_MATCH_FAIL if the tag
- * doesn't match, TAG_MATCH_NEXT to look for the next matching tag (used in a
- * binary search) and TAG_MATCH_STOP if all the tags are processed without a
- * match. Uses the values in 'margs' for doing the comparison.
+ * Compares the tag name in "tagpp->tagname" with a search pattern in
+ * "st->orgpat->pat".
+ * Returns TRUE if the tag matches, FALSE if the tag doesn't match.
+ * Uses the values in "margs" for doing the comparison.
  */
-    static tagmatch_status_T
+    static int
 findtags_match_tag(
     findtags_state_T	*st,
     tagptrs_T		*tagpp,
@@ -2470,11 +2491,11 @@ findtags_match_tag(
 	margs->match_re = TRUE;
     }
 
-    return match ? TAG_MATCH_SUCCESS : TAG_MATCH_FAIL;
+    return match;
 }
 
 /*
- * Convert the encoding of a line read from a tags file in 'st->lbuf'.
+ * Convert the encoding of a line read from a tags file in "st->lbuf".
  * Converting the pattern from 'enc' to the tags file encoding doesn't work,
  * because characters are not recognized. The converted line is saved in
  * st->lbuf.
@@ -2739,7 +2760,7 @@ findtags_add_match(
 
 /*
  * Read and get all the tags from file st->tag_fname.
- * Sets 'st->stop_searching' to TRUE to stop searching for additional tags.
+ * Sets "st->stop_searching" to TRUE to stop searching for additional tags.
  */
     static void
 findtags_get_all_tags(
@@ -2868,14 +2889,8 @@ line_read_in:
 	    return;
 	}
 
-	retval = findtags_match_tag(st, &tagp, margs);
-	if (retval == TAG_MATCH_NEXT)
-	    continue;
-	if (retval == TAG_MATCH_STOP)
-	    break;
-
 	// If a match is found, add it to ht_match[] and ga_match[].
-	if (retval == TAG_MATCH_SUCCESS)
+	if (findtags_match_tag(st, &tagp, margs))
 	{
 	    if (findtags_add_match(st, &tagp, margs, buf_ffname, &hash)
 								== FAIL)
@@ -2885,10 +2900,10 @@ line_read_in:
 }
 
 /*
- * Search for tags matching 'st->orgpat.pat' in the 'st->tag_fname' tags file.
- * Information needed to search for the tags is in the 'st' state structure.
- * The matching tags are returned in 'st'. If an error is encountered, then
- * 'st->stop_searching' is set to TRUE.
+ * Search for tags matching "st->orgpat->pat" in the "st->tag_fname" tags file.
+ * Information needed to search for the tags is in the "st" state structure.
+ * The matching tags are returned in "st". If an error is encountered, then
+ * "st->stop_searching" is set to TRUE.
  */
     static void
 findtags_in_file(findtags_state_T *st, char_u *buf_ffname)
@@ -2960,7 +2975,7 @@ findtags_in_file(findtags_state_T *st, char_u *buf_ffname)
 }
 
 /*
- * Copy the tags found by find_tags() to 'matchesp'.
+ * Copy the tags found by find_tags() to "matchesp".
  * Returns the number of matches copied.
  */
     static int
@@ -3391,11 +3406,7 @@ get_tagfname(
 	    buf[0] = NUL;
 	    (void)copy_option_part(&tnp->tn_np, buf, MAXPATHL - 1, " ,");
 
-#ifdef FEAT_PATH_EXTRA
 	    r_ptr = vim_findfile_stopdir(buf);
-#else
-	    r_ptr = NULL;
-#endif
 	    // move the filename one char forward and truncate the
 	    // filepath with a NUL
 	    filename = gettail(buf);
@@ -3941,7 +3952,7 @@ jumpto_tag(
 		}
 		if (found == 0)
 		{
-		    emsg(_(e_canot_find_tag_pattern));
+		    emsg(_(e_cannot_find_tag_pattern));
 		    curwin->w_cursor.lnum = save_lnum;
 		}
 		else
@@ -4024,7 +4035,7 @@ jumpto_tag(
 	{
 	    // Return cursor to where we were
 	    validate_cursor();
-	    redraw_later(VALID);
+	    redraw_later(UPD_VALID);
 	    win_enter(curwin_save, TRUE);
 	}
 #endif
@@ -4365,7 +4376,12 @@ get_tags(list_T *list, char_u *pat, char_u *buf_fname)
     {
 	for (i = 0; i < num_matches; ++i)
 	{
-	    parse_match(matches[i], &tp);
+	    if (parse_match(matches[i], &tp) == FAIL)
+	    {
+		vim_free(matches[i]);
+		continue;
+	    }
+
 	    is_static = test_for_static(&tp);
 
 	    // Skip pseudo-tag lines.
@@ -4376,7 +4392,11 @@ get_tags(list_T *list, char_u *pat, char_u *buf_fname)
 	    }
 
 	    if ((dict = dict_alloc()) == NULL)
+	    {
 		ret = FAIL;
+		vim_free(matches[i]);
+		break;
+	    }
 	    if (list_append_dict(list, dict) == FAIL)
 		ret = FAIL;
 
@@ -4589,17 +4609,16 @@ tagstack_push_items(win_T *wp, list_T *l)
 	    continue;
 	if (list2fpos(&di->di_tv, &mark, &fnum, NULL, FALSE) != OK)
 	    continue;
-	if ((tagname =
-		dict_get_string(itemdict, (char_u *)"tagname", TRUE)) == NULL)
+	if ((tagname = dict_get_string(itemdict, "tagname", TRUE)) == NULL)
 	    continue;
 
 	if (mark.col > 0)
 	    mark.col--;
 	tagstack_push_item(wp, tagname,
-		(int)dict_get_number(itemdict, (char_u *)"bufnr"),
-		(int)dict_get_number(itemdict, (char_u *)"matchnr") - 1,
+		(int)dict_get_number(itemdict, "bufnr"),
+		(int)dict_get_number(itemdict, "matchnr") - 1,
 		mark, fnum,
-		dict_get_string(itemdict, (char_u *)"user_data", TRUE));
+		dict_get_string(itemdict, "user_data", TRUE));
     }
 }
 

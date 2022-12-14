@@ -74,32 +74,31 @@ clear_job_options(jobopt_T *opt)
     CLEAR_POINTER(opt);
 }
 
+    static void
+unref_job_callback(callback_T *cb)
+{
+    if (cb->cb_partial != NULL)
+	partial_unref(cb->cb_partial);
+    else if (cb->cb_name != NULL)
+    {
+	func_unref(cb->cb_name);
+	if (cb->cb_free_name)
+	    vim_free(cb->cb_name);
+    }
+}
+
 /*
  * Free any members of a jobopt_T.
  */
     void
 free_job_options(jobopt_T *opt)
 {
-    if (opt->jo_callback.cb_partial != NULL)
-	partial_unref(opt->jo_callback.cb_partial);
-    else if (opt->jo_callback.cb_name != NULL)
-	func_unref(opt->jo_callback.cb_name);
-    if (opt->jo_out_cb.cb_partial != NULL)
-	partial_unref(opt->jo_out_cb.cb_partial);
-    else if (opt->jo_out_cb.cb_name != NULL)
-	func_unref(opt->jo_out_cb.cb_name);
-    if (opt->jo_err_cb.cb_partial != NULL)
-	partial_unref(opt->jo_err_cb.cb_partial);
-    else if (opt->jo_err_cb.cb_name != NULL)
-	func_unref(opt->jo_err_cb.cb_name);
-    if (opt->jo_close_cb.cb_partial != NULL)
-	partial_unref(opt->jo_close_cb.cb_partial);
-    else if (opt->jo_close_cb.cb_name != NULL)
-	func_unref(opt->jo_close_cb.cb_name);
-    if (opt->jo_exit_cb.cb_partial != NULL)
-	partial_unref(opt->jo_exit_cb.cb_partial);
-    else if (opt->jo_exit_cb.cb_name != NULL)
-	func_unref(opt->jo_exit_cb.cb_name);
+    unref_job_callback(&opt->jo_callback);
+    unref_job_callback(&opt->jo_out_cb);
+    unref_job_callback(&opt->jo_err_cb);
+    unref_job_callback(&opt->jo_close_cb);
+    unref_job_callback(&opt->jo_exit_cb);
+
     if (opt->jo_env != NULL)
 	dict_unref(opt->jo_env);
 }
@@ -222,7 +221,8 @@ get_job_options(typval_T *tv, jobopt_T *opt, int supported, int supported2)
 		opt->jo_io_buf[part] = tv_get_number(item);
 		if (opt->jo_io_buf[part] <= 0)
 		{
-		    semsg(_(e_invalid_value_for_argument_str_str), hi->hi_key, tv_get_string(item));
+		    semsg(_(e_invalid_value_for_argument_str_str),
+					      hi->hi_key, tv_get_string(item));
 		    return FAIL;
 		}
 		if (buflist_findnr(opt->jo_io_buf[part]) == NULL)
@@ -1686,6 +1686,8 @@ f_prompt_setcallback(typval_T *argvars, typval_T *rettv UNUSED)
 
     free_callback(&buf->b_prompt_callback);
     set_callback(&buf->b_prompt_callback, &callback);
+    if (callback.cb_free_name)
+	vim_free(callback.cb_name);
 }
 
 /*
@@ -1713,6 +1715,8 @@ f_prompt_setinterrupt(typval_T *argvars, typval_T *rettv UNUSED)
 
     free_callback(&buf->b_prompt_interrupt);
     set_callback(&buf->b_prompt_interrupt, &callback);
+    if (callback.cb_free_name)
+	vim_free(callback.cb_name);
 }
 
 
@@ -1893,7 +1897,7 @@ f_job_info(typval_T *argvars, typval_T *rettv)
 	job_T	*job;
 
 	job = get_job_arg(&argvars[0]);
-	if (job != NULL && rettv_dict_alloc(rettv) != FAIL)
+	if (job != NULL && rettv_dict_alloc(rettv) == OK)
 	    job_info(job, rettv->vval.v_dict);
     }
     else if (rettv_list_alloc(rettv) == OK)

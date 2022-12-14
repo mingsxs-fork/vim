@@ -37,7 +37,7 @@ static char_u	*confirm_msg = NULL;		// ":confirm" message
 static char_u	*confirm_msg_tail;		// tail of confirm_msg
 static void display_confirm_msg(void);
 #endif
-#ifdef FEAT_JOB_CHANNEL
+#ifdef FEAT_EVAL
 static int emsg_to_channel_log = FALSE;
 #endif
 
@@ -94,7 +94,7 @@ static int  verbose_did_open = FALSE;
 /*
  * msg(s) - displays the string 's' on the status line
  * When terminal not initialized (yet) mch_errmsg(..) is used.
- * return TRUE if wait_return not called
+ * return TRUE if wait_return() not called
  */
     int
 msg(char *s)
@@ -167,7 +167,7 @@ msg_attr_keep(
 		&& STRCMP(s, last_msg_hist->msg)))
 	add_msg_hist((char_u *)s, -1, attr);
 
-#ifdef FEAT_JOB_CHANNEL
+#ifdef FEAT_EVAL
     if (emsg_to_channel_log)
 	// Write message in the channel log.
 	ch_log(NULL, "ERROR: %s", s);
@@ -212,7 +212,11 @@ msg_strtrunc(
 			       && !exmode_active && msg_silent == 0) || force)
     {
 	len = vim_strsize(s);
-	if (msg_scrolled != 0)
+	if (msg_scrolled != 0
+#ifdef HAS_MESSAGE_WINDOW
+		|| in_echowindow
+#endif
+		)
 	    // Use all the columns.
 	    room = (int)(Rows - msg_row) * Columns - 1;
 	else
@@ -541,6 +545,7 @@ msg_source(int attr)
     p = get_emsg_source();
     if (p != NULL)
     {
+	msg_scroll = TRUE;  // this will take more than one line
 	msg_attr((char *)p, attr);
 	vim_free(p);
     }
@@ -632,7 +637,7 @@ do_perror(char *msg)
  * Rings the bell, if appropriate, and calls message() to do the real work
  * When terminal not initialized (yet) mch_errmsg(..) is used.
  *
- * Return TRUE if wait_return not called.
+ * Return TRUE if wait_return() not called.
  * Note: caller must check 'emsg_not_now()' before calling this.
  */
     static int
@@ -726,7 +731,7 @@ emsg_core(char_u *s)
 	    if (emsg_silent == emsg_silent_def)
 		++did_emsg_def;
 #endif
-#ifdef FEAT_JOB_CHANNEL
+#ifdef FEAT_EVAL
 	    ch_log(NULL, "ERROR silent: %s", (char *)s);
 #endif
 	    return TRUE;
@@ -751,12 +756,15 @@ emsg_core(char_u *s)
 #endif
     }
 
-    emsg_on_display = TRUE;	// remember there is an error message
-    ++msg_scroll;		// don't overwrite a previous message
-    attr = HL_ATTR(HLF_E);	// set highlight mode for error messages
+#ifdef HAS_MESSAGE_WINDOW
+    if (!in_echowindow)
+#endif
+	emsg_on_display = TRUE;	    // remember there is an error message
+
+    attr = HL_ATTR(HLF_E);	    // set highlight mode for error messages
     if (msg_scrolled != 0)
 	need_wait_return = TRUE;    // needed in case emsg() is called after
-				    // wait_return has reset need_wait_return
+				    // wait_return() has reset need_wait_return
 				    // and a redraw is expected because
 				    // msg_scrolled is non-zero
 
@@ -766,6 +774,7 @@ emsg_core(char_u *s)
     /*
      * Display name and line number for the source of the error.
      */
+    msg_scroll = TRUE;
     msg_source(attr);
 
     /*
@@ -836,6 +845,8 @@ iemsg(char *s)
 	emsg_core((char_u *)s);
 #if defined(ABORT_ON_INTERNAL_ERROR) && defined(FEAT_EVAL)
 	set_vim_var_string(VV_ERRMSG, (char_u *)s, -1);
+	msg_putchar('\n');  // avoid overwriting the error message
+	out_flush();
 	abort();
 #endif
     }
@@ -868,10 +879,12 @@ siemsg(const char *s, ...)
 	    va_end(ap);
 	    emsg_core(IObuff);
 	}
-    }
 # ifdef ABORT_ON_INTERNAL_ERROR
-    abort();
+	msg_putchar('\n');  // avoid overwriting the error message
+	out_flush();
+	abort();
 # endif
+    }
 }
 #endif
 
@@ -955,8 +968,10 @@ msg_may_trunc(int force, char_u *s)
     int		n;
     int		room;
 
+    // If 'cmdheight' is zero or something unexpected happened "room" may be
+    // negative.
     room = (int)(Rows - cmdline_row - 1) * Columns + sc_col - 1;
-    if ((force || (shortmess(SHM_TRUNC) && !exmode_active))
+    if (room > 0 && (force || (shortmess(SHM_TRUNC) && !exmode_active))
 	    && (n = (int)STRLEN(s) - room) > 0)
     {
 	if (has_mbyte)
@@ -1142,12 +1157,16 @@ wait_return(int redraw)
     FILE	*save_scriptout;
 
     if (redraw == TRUE)
-	must_redraw = CLEAR;
+	set_must_redraw(UPD_CLEAR);
 
     // If using ":silent cmd", don't wait for a return.  Also don't set
     // need_wait_return to do it later.
     if (msg_silent != 0)
 	return;
+#ifdef HAS_MESSAGE_WINDOW
+    if (in_echowindow)
+	return;
+#endif
 
     /*
      * When inside vgetc(), we can't wait for a typed character at all.
@@ -1298,9 +1317,8 @@ wait_return(int redraw)
 					|| c == K_X2MOUSE))
 				);
 	ui_breakcheck();
-	/*
-	 * Avoid that the mouse-up event causes visual mode to start.
-	 */
+
+	// Avoid that the mouse-up event causes Visual mode to start.
 	if (c == K_LEFTMOUSE || c == K_MIDDLEMOUSE || c == K_RIGHTMOUSE
 					  || c == K_X1MOUSE || c == K_X2MOUSE)
 	    (void)jump_to_mouse(MOUSE_SETPOS, NULL, 0);
@@ -1366,7 +1384,7 @@ wait_return(int redraw)
 	    && (redraw == TRUE || (msg_scrolled != 0 && redraw != -1)))
     {
 	starttermcap();		    // start termcap before redrawing
-	redraw_later(VALID);
+	redraw_later(UPD_VALID);
     }
 }
 
@@ -1405,7 +1423,6 @@ set_keep_msg(char_u *s, int attr)
     keep_msg_attr = attr;
 }
 
-#if defined(FEAT_TERMRESPONSE) || defined(PROTO)
 /*
  * If there currently is a message being displayed, set "keep_msg" to it, so
  * that it will be displayed again after redraw.
@@ -1417,7 +1434,6 @@ set_keep_msg_from_hist(void)
 						      && (State & MODE_NORMAL))
 	set_keep_msg(last_msg_hist->msg, last_msg_hist->attr);
 }
-#endif
 
 /*
  * Prepare for outputting characters in the command line.
@@ -1443,7 +1459,26 @@ msg_start(void)
     }
 #endif
 
-    if (!msg_scroll && full_screen)	// overwrite last message
+#ifdef HAS_MESSAGE_WINDOW
+    if (in_echowindow)
+    {
+	if (popup_message_win_visible()
+		    && ((msg_col > 0 && (msg_scroll || !full_screen))
+			|| in_echowindow))
+	{
+	    win_T *wp = popup_get_message_win();
+
+	    // start a new line
+	    curbuf = wp->w_buffer;
+	    ml_append(wp->w_buffer->b_ml.ml_line_count,
+					      (char_u *)"", (colnr_T)0, FALSE);
+	    curbuf = curwin->w_buffer;
+	}
+	msg_col = 0;
+    }
+    else
+#endif
+	if (!msg_scroll && full_screen)	// overwrite last message
     {
 	msg_row = cmdline_row;
 	msg_col =
@@ -1452,8 +1487,9 @@ msg_start(void)
 #endif
 	    0;
     }
-    else if (msg_didout)		    // start message on next line
+    else if (msg_didout || in_echowindow)
     {
+	// start message on next line
 	msg_putchar('\n');
 	did_return = TRUE;
 	if (exmode_active != EXMODE_NORMAL)
@@ -1726,7 +1762,7 @@ msg_outtrans_special(
 	    ++str;
 	}
 	else
-	    text = (char *)str2special(&str, from);
+	    text = (char *)str2special(&str, from, FALSE);
 	if (text[0] != NUL && text[1] == NUL)
 	    // single-byte character or illegal byte
 	    text = (char *)transchar_byte((char_u)text[0]);
@@ -1741,7 +1777,7 @@ msg_outtrans_special(
     return retval;
 }
 
-#if defined(FEAT_EVAL) || defined(PROTO)
+#if defined(FEAT_EVAL) || defined(FEAT_SPELL) || defined(PROTO)
 /*
  * Return the lhs or rhs of a mapping, with the key codes turned into printable
  * strings, in an allocated string.
@@ -1749,14 +1785,16 @@ msg_outtrans_special(
     char_u *
 str2special_save(
     char_u  *str,
-    int	    is_lhs)  // TRUE for lhs, FALSE for rhs
+    int	    replace_spaces,	// TRUE to replace " " with "<Space>".
+				// used for the lhs of mapping and keytrans().
+    int	    replace_lt)		// TRUE to replace "<" with "<lt>".
 {
     garray_T	ga;
     char_u	*p = str;
 
     ga_init2(&ga, 1, 40);
     while (*p != NUL)
-	ga_concat(&ga, str2special(&p, is_lhs));
+	ga_concat(&ga, str2special(&p, replace_spaces, replace_lt));
     ga_append(&ga, NUL);
     return (char_u *)ga.ga_data;
 }
@@ -1771,7 +1809,9 @@ str2special_save(
     char_u *
 str2special(
     char_u	**sp,
-    int		from)	// TRUE for lhs of mapping
+    int		replace_spaces,	// TRUE to replace " " with "<Space>".
+				// used for the lhs of mapping and keytrans().
+    int		replace_lt)	// TRUE to replace "<" with "<lt>".
 {
     int			c;
     static char_u	buf[7];
@@ -1824,12 +1864,14 @@ str2special(
 	    *sp = str + 1;
     }
     else
-	// single-byte character or illegal byte
-	*sp = str + 1;
+	// single-byte character, NUL or illegal byte
+	*sp = str + (*str == NUL ? 0 : 1);
 
     // Make special keys and C0 control characters in <> form, also <M-Space>.
-    // Use <Space> only for lhs of a mapping.
-    if (special || c < ' ' || (from && c == ' '))
+    if (special
+	|| c < ' '
+	|| (replace_spaces && c == ' ')
+	|| (replace_lt && c == '<'))
 	return get_special_key_name(c, modifiers);
     buf[0] = c;
     buf[1] = NUL;
@@ -1847,7 +1889,7 @@ str2specialbuf(char_u *sp, char_u *buf, int len)
     *buf = NUL;
     while (*sp)
     {
-	s = str2special(&sp, FALSE);
+	s = str2special(&sp, FALSE, FALSE);
 	if ((int)(STRLEN(s) + STRLEN(buf)) < len)
 	    STRCAT(buf, s);
     }
@@ -1887,7 +1929,8 @@ msg_prt_line(char_u *s, int list)
 		--trail;
 	}
 	// find end of leading whitespace
-	if (curwin->w_lcs_chars.lead || curwin->w_lcs_chars.leadmultispace != NULL)
+	if (curwin->w_lcs_chars.lead
+				 || curwin->w_lcs_chars.leadmultispace != NULL)
 	{
 	    lead = s;
 	    while (VIM_ISWHITE(lead[0]))
@@ -1926,8 +1969,9 @@ msg_prt_line(char_u *s, int list)
 		    && (mb_ptr2char(s) == 160
 			|| mb_ptr2char(s) == 0x202f))
 	    {
-		mb_char2bytes(curwin->w_lcs_chars.nbsp, buf);
-		buf[(*mb_ptr2len)(buf)] = NUL;
+		int len = mb_char2bytes(curwin->w_lcs_chars.nbsp, buf);
+
+		buf[len] = NUL;
 	    }
 	    else
 	    {
@@ -2003,11 +2047,13 @@ msg_prt_line(char_u *s, int list)
 			&& curwin->w_lcs_chars.leadmultispace != NULL)
 		{
 		    c = curwin->w_lcs_chars.leadmultispace[multispace_pos++];
-		    if (curwin->w_lcs_chars.leadmultispace[multispace_pos] == NUL)
+		    if (curwin->w_lcs_chars.leadmultispace[multispace_pos]
+									== NUL)
 			multispace_pos = 0;
 		    attr = HL_ATTR(HLF_8);
 		}
-		else if (lead != NULL && s <= lead && curwin->w_lcs_chars.lead)
+		else if (lead != NULL && s <= lead
+					    && curwin->w_lcs_chars.lead != NUL)
 		{
 		    c = curwin->w_lcs_chars.lead;
 		    attr = HL_ATTR(HLF_8);
@@ -2015,14 +2061,6 @@ msg_prt_line(char_u *s, int list)
 		else if (trail != NULL && s > trail)
 		{
 		    c = curwin->w_lcs_chars.trail;
-		    attr = HL_ATTR(HLF_8);
-		}
-		else if (list && lead != NULL && s <= lead && in_multispace
-			&& curwin->w_lcs_chars.leadmultispace != NULL)
-		{
-		    c = curwin->w_lcs_chars.leadmultispace[multispace_pos++];
-		    if (curwin->w_lcs_chars.leadmultispace[multispace_pos] == NUL)
-			multispace_pos = 0;
 		    attr = HL_ATTR(HLF_8);
 		}
 		else if (list && in_multispace
@@ -2198,6 +2236,64 @@ msg_puts_attr_len(char *str, int maxlen, int attr)
     need_fileinfo = FALSE;
 }
 
+// values for "where"
+#define PUT_APPEND 0		// append to "lnum"
+#define PUT_TRUNC 1		// replace "lnum"
+#define PUT_BELOW 2		// add below "lnum"
+				//
+#ifdef HAS_MESSAGE_WINDOW
+/*
+ * Put text "t_s" until "end" in the message window.
+ * "where" specifies where to put the text.
+ */
+    static void
+put_msg_win(win_T *wp, int where, char_u *t_s, char_u *end, linenr_T lnum)
+{
+    char_u  *p;
+
+    if (where == PUT_BELOW)
+    {
+	if (*end != NUL)
+	{
+	    p = vim_strnsave(t_s, end - t_s);
+	    if (p == NULL)
+		return;
+	}
+	else
+	    p = t_s;
+	ml_append_buf(wp->w_buffer, lnum, p, (colnr_T)0, FALSE);
+	if (p != t_s)
+	    vim_free(p);
+    }
+    else
+    {
+	char_u *newp;
+
+	curbuf = wp->w_buffer;
+	if (where == PUT_APPEND)
+	{
+	    newp = concat_str(ml_get(lnum), t_s);
+	    if (newp == NULL)
+		return;
+	    if (*end != NUL)
+		newp[STRLEN(ml_get(lnum)) + (end - t_s)] = NUL;
+	}
+	else
+	{
+	    newp = vim_strnsave(t_s, end - t_s);
+	    if (newp == NULL)
+		return;
+	}
+	ml_replace(lnum, newp, FALSE);
+	curbuf = curwin->w_buffer;
+    }
+    redraw_win_later(wp, UPD_NOT_VALID);
+
+    // set msg_col so that a newline is written if needed
+    msg_col += (int)(end - t_s);
+}
+#endif
+
 /*
  * The display part of msg_puts_attr_len().
  * May be called recursively to display scroll-back text.
@@ -2218,6 +2314,43 @@ msg_puts_display(
     int		sb_col = msg_col;
     int		wrap;
     int		did_last_char;
+#ifdef HAS_MESSAGE_WINDOW
+    int		where = PUT_APPEND;
+    win_T	*msg_win = NULL;
+    linenr_T    lnum = 1;
+
+    if (in_echowindow)
+    {
+	msg_win = popup_get_message_win();
+
+	if (msg_win != NULL)
+	{
+	    if (!popup_message_win_visible())
+	    {
+		if (*str == NL)
+		{
+		    // When not showing the message window and the output
+		    // starts with a NL show the message normally.
+		    msg_win = NULL;
+		}
+		else
+		{
+		    // currently hidden, make it empty
+		    curbuf = msg_win->w_buffer;
+		    while ((curbuf->b_ml.ml_flags & ML_EMPTY) == 0)
+			ml_delete(1);
+		    curbuf = curwin->w_buffer;
+		}
+	    }
+	    else
+	    {
+		lnum = msg_win->w_buffer->b_ml.ml_line_count;
+		if (msg_col == 0)
+		    where = PUT_TRUNC;
+	    }
+	}
+    }
+#endif
 
     did_wait_return = FALSE;
     while ((maxlen < 0 || (int)(s - str) < maxlen) && *s != NUL)
@@ -2247,15 +2380,29 @@ msg_puts_display(
 	     * ourselves).
 	     */
 	    if (t_col > 0)
+	    {
 		// output postponed text
-		t_puts(&t_col, t_s, s, attr);
+#ifdef HAS_MESSAGE_WINDOW
+		if (msg_win != NULL)
+		{
+		    put_msg_win(msg_win, where, t_s, s, lnum);
+		    t_col = 0;
+		    where = PUT_BELOW;
+		}
+		else
+#endif
+		    t_puts(&t_col, t_s, s, attr);
+	    }
 
 	    // When no more prompt and no more room, truncate here
 	    if (msg_no_more && lines_left == 0)
 		break;
 
-	    // Scroll the screen up one line.
-	    msg_scroll_up();
+#ifdef HAS_MESSAGE_WINDOW
+	    if (msg_win == NULL)
+#endif
+		// Scroll the screen up one line.
+		msg_scroll_up();
 
 	    msg_row = Rows - 2;
 	    if (msg_col >= Columns)	// can happen after screen resize
@@ -2288,18 +2435,25 @@ msg_puts_display(
 		// store text for scrolling back
 		store_sb_text(&sb_str, s, attr, &sb_col, TRUE);
 
-	    inc_msg_scrolled();
-	    need_wait_return = TRUE; // may need wait_return in main()
-	    redraw_cmdline = TRUE;
-	    if (cmdline_row > 0 && !exmode_active)
-		--cmdline_row;
+#ifdef HAS_MESSAGE_WINDOW
+	    if (msg_win == NULL)
+	    {
+#endif
+		inc_msg_scrolled();
+		need_wait_return = TRUE; // may need wait_return() in main()
+		redraw_cmdline = TRUE;
+		if (cmdline_row > 0 && !exmode_active)
+		    --cmdline_row;
 
-	    /*
-	     * If screen is completely filled and 'more' is set then wait
-	     * for a character.
-	     */
-	    if (lines_left > 0)
-		--lines_left;
+		/*
+		 * If screen is completely filled and 'more' is set then wait
+		 * for a character.
+		 */
+		if (lines_left > 0)
+		    --lines_left;
+#ifdef HAS_MESSAGE_WINDOW
+	    }
+#endif
 	    if (p_more && lines_left == 0 && State != MODE_HITRETURN
 					    && !msg_no_more && !exmode_active)
 	    {
@@ -2325,8 +2479,19 @@ msg_puts_display(
 					    && msg_col + t_col >= Columns - 1);
 	if (t_col > 0 && (wrap || *s == '\r' || *s == '\b'
 						 || *s == '\t' || *s == BELL))
+	{
 	    // output any postponed text
-	    t_puts(&t_col, t_s, s, attr);
+#ifdef HAS_MESSAGE_WINDOW
+	    if (msg_win != NULL)
+	    {
+		put_msg_win(msg_win, where, t_s, s, lnum);
+		t_col = 0;
+		where = PUT_BELOW;
+	    }
+	    else
+#endif
+		t_puts(&t_col, t_s, s, attr);
+	}
 
 	if (wrap && p_more && !recurse)
 	    // store text for scrolling back
@@ -2334,7 +2499,20 @@ msg_puts_display(
 
 	if (*s == '\n')		    // go to next line
 	{
-	    msg_didout = FALSE;	    // remember that line is empty
+#ifdef HAS_MESSAGE_WINDOW
+	    if (msg_win != NULL)
+	    {
+		// Ignore a NL when the buffer is empty, it is used to scroll
+		// up the text.
+		if ((msg_win->w_buffer->b_ml.ml_flags & ML_EMPTY) == 0)
+		{
+		    put_msg_win(msg_win, PUT_BELOW, t_s, t_s, lnum);
+		    ++lnum;
+		}
+	    }
+	    else
+#endif
+		msg_didout = FALSE;	    // remember that line is empty
 #ifdef FEAT_RIGHTLEFT
 	    if (cmdmsg_rl)
 		msg_col = Columns - 1;
@@ -2347,6 +2525,9 @@ msg_puts_display(
 	else if (*s == '\r')	    // go to column 0
 	{
 	    msg_col = 0;
+#ifdef HAS_MESSAGE_WINDOW
+	    where = PUT_TRUNC;
+#endif
 	}
 	else if (*s == '\b')	    // go to previous char
 	{
@@ -2355,9 +2536,14 @@ msg_puts_display(
 	}
 	else if (*s == TAB)	    // translate Tab into spaces
 	{
-	    do
-		msg_screen_putchar(' ', attr);
-	    while (msg_col & 7);
+#ifdef HAS_MESSAGE_WINDOW
+	    if (msg_win != NULL)
+		msg_col = (msg_col + 7) % 8;
+	    else
+#endif
+		do
+		    msg_screen_putchar(' ', attr);
+		while (msg_col & 7);
 	}
 	else if (*s == BELL)		// beep (from ":sh")
 	    vim_beep(BO_SH);
@@ -2406,8 +2592,21 @@ msg_puts_display(
 
     // output any postponed text
     if (t_col > 0)
-	t_puts(&t_col, t_s, s, attr);
-    if (p_more && !recurse)
+    {
+#ifdef HAS_MESSAGE_WINDOW
+	if (msg_win != NULL)
+	    put_msg_win(msg_win, where, t_s, s, lnum);
+	else
+#endif
+	    t_puts(&t_col, t_s, s, attr);
+    }
+
+#ifdef HAS_MESSAGE_WINDOW
+    if (msg_win != NULL)
+	popup_show_message_win();
+#endif
+    // Store the text for scroll back, unless it's a newline by itself.
+    if (p_more && !recurse && !(s == sb_str + 1 && *sb_str == '\n'))
 	store_sb_text(&sb_str, s, attr, &sb_col, FALSE);
 
     msg_check();
@@ -2434,6 +2633,10 @@ message_filtered(char_u *msg)
     static void
 msg_scroll_up(void)
 {
+#ifdef HAS_MESSAGE_WINDOW
+    if (in_echowindow)
+	return;
+#endif
 #ifdef FEAT_GUI
     // Remove the cursor before scrolling, ScreenLines[] is going
     // to become invalid.
@@ -2493,8 +2696,7 @@ inc_msg_scrolled(void)
     }
 #endif
     ++msg_scrolled;
-    if (must_redraw < VALID)
-	must_redraw = VALID;
+    set_must_redraw(UPD_VALID);
 }
 
 /*
@@ -2543,6 +2745,7 @@ store_sb_text(
 	    || do_clear_sb_text == SB_CLEAR_CMDLINE_DONE)
     {
 	clear_sb_text(do_clear_sb_text == SB_CLEAR_ALL);
+	msg_sb_eol();  // prevent messages from overlapping
 	do_clear_sb_text = SB_CLEAR_NONE;
     }
 
@@ -2587,17 +2790,53 @@ may_clear_sb_text(void)
 }
 
 /*
- * Starting to edit the command line, do not clear messages now.
+ * Starting to edit the command line: do not clear messages now.
  */
     void
 sb_text_start_cmdline(void)
 {
-    do_clear_sb_text = SB_CLEAR_CMDLINE_BUSY;
-    msg_sb_eol();
+    if (do_clear_sb_text == SB_CLEAR_CMDLINE_BUSY)
+	// Invoking command line recursively: the previous-level command line
+	// doesn't need to be remembered as it will be redrawn when returning
+	// to that level.
+	sb_text_restart_cmdline();
+    else
+    {
+	msg_sb_eol();
+	do_clear_sb_text = SB_CLEAR_CMDLINE_BUSY;
+    }
 }
 
 /*
- * Ending to edit the command line.  Clear old lines but the last one later.
+ * Redrawing the command line: clear the last unfinished line.
+ */
+    void
+sb_text_restart_cmdline(void)
+{
+    msgchunk_T *tofree;
+
+    // Needed when returning from nested command line.
+    do_clear_sb_text = SB_CLEAR_CMDLINE_BUSY;
+
+    if (last_msgchunk == NULL || last_msgchunk->sb_eol)
+	// No unfinished line: don't clear anything.
+	return;
+
+    tofree = msg_sb_start(last_msgchunk);
+    last_msgchunk = tofree->sb_prev;
+    if (last_msgchunk != NULL)
+	last_msgchunk->sb_next = NULL;
+    while (tofree != NULL)
+    {
+	msgchunk_T *tofree_next = tofree->sb_next;
+
+	vim_free(tofree);
+	tofree = tofree_next;
+    }
+}
+
+/*
+ * Ending to edit the command line: clear old lines but the last one later.
  */
     void
 sb_text_end_cmdline(void)
@@ -2622,7 +2861,7 @@ clear_sb_text(int all)
     {
 	if (last_msgchunk == NULL)
 	    return;
-	lastp = &last_msgchunk->sb_prev;
+	lastp = &msg_sb_start(last_msgchunk)->sb_prev;
     }
 
     while (*lastp != NULL)
@@ -2678,10 +2917,11 @@ msg_sb_eol(void)
 
 /*
  * Display a screen line from previously displayed text at row "row".
+ * When "clear_to_eol" is set clear the rest of the screen line.
  * Returns a pointer to the text for the next line (can be NULL).
  */
     static msgchunk_T *
-disp_sb_line(int row, msgchunk_T *smp)
+disp_sb_line(int row, msgchunk_T *smp, int clear_to_eol)
 {
     msgchunk_T	*mp = smp;
     char_u	*p;
@@ -2694,6 +2934,12 @@ disp_sb_line(int row, msgchunk_T *smp)
 	if (*p == '\n')	    // don't display the line break
 	    ++p;
 	msg_puts_display(p, -1, mp->sb_attr, TRUE);
+
+	// If clearing the screen did not work (e.g. because of a background
+	// color and t_ut isn't set) clear until the last column here.
+	if (clear_to_eol)
+	    screen_fill(row, row + 1, msg_col, (int)Columns, ' ', ' ', 0);
+
 	if (mp->sb_eol || mp->sb_next == NULL)
 	    break;
 	mp = mp->sb_next;
@@ -3044,15 +3290,16 @@ do_more_prompt(int typed_char)
 						     (int)Rows, 0, NULL) == OK)
 		    {
 			// display line at top
-			(void)disp_sb_line(0, mp);
+			(void)disp_sb_line(0, mp, FALSE);
 		    }
 		    else
 		    {
+			int did_clear = screenclear();
+
 			// redisplay all lines
-			screenclear();
 			for (i = 0; mp != NULL && i < Rows - 1; ++i)
 			{
-			    mp = disp_sb_line(i, mp);
+			    mp = disp_sb_line(i, mp, !did_clear);
 			    ++msg_scrolled;
 			}
 		    }
@@ -3069,7 +3316,7 @@ do_more_prompt(int typed_char)
 		    inc_msg_scrolled();
 		    screen_fill((int)Rows - 2, (int)Rows - 1, 0,
 						   (int)Columns, ' ', ' ', 0);
-		    mp_last = disp_sb_line((int)Rows - 2, mp_last);
+		    mp_last = disp_sb_line((int)Rows - 2, mp_last, FALSE);
 		    --toscroll;
 		}
 	    }
@@ -3421,6 +3668,10 @@ msg_clr_eos(void)
     void
 msg_clr_eos_force(void)
 {
+#ifdef HAS_MESSAGE_WINDOW
+    if (in_echowindow)
+	return;  // messages go into a popup
+#endif
     if (msg_use_printf())
     {
 	if (full_screen)	// only when termcap codes are valid
@@ -3462,8 +3713,8 @@ msg_clr_cmdline(void)
 
 /*
  * end putting a message on the screen
- * call wait_return if the message does not fit in the available space
- * return TRUE if wait_return not called.
+ * call wait_return() if the message does not fit in the available space
+ * return TRUE if wait_return() not called.
  */
     int
 msg_end(void)
@@ -3490,7 +3741,11 @@ msg_end(void)
     void
 msg_check(void)
 {
-    if (msg_row == Rows - 1 && msg_col >= sc_col)
+    if (msg_row == Rows - 1 && msg_col >= sc_col
+#ifdef HAS_MESSAGE_WINDOW
+		&& !in_echowindow
+#endif
+	    )
     {
 	need_wait_return = TRUE;
 	redraw_cmdline = TRUE;
@@ -3810,7 +4065,11 @@ do_dialog(
     // When GUI is running and 'c' not in 'guioptions', use the GUI dialog
     if (gui.in_use && vim_strchr(p_go, GO_CONDIALOG) == NULL)
     {
-	c = gui_mch_dialog(type, title, message, buttons, dfltbutton,
+	// --gui-dialog-file: write text to a file
+	if (gui_dialog_log(title, message))
+	    c = dfltbutton;
+	else
+	    c = gui_mch_dialog(type, title, message, buttons, dfltbutton,
 							   textfield, ex_cmd);
 	// avoid a hit-enter prompt without clearing the cmdline
 	need_wait_return = FALSE;

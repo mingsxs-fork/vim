@@ -46,6 +46,10 @@ static int s_tearoffs = FALSE;
 static int menu_is_hidden(char_u *name);
 static int menu_is_tearoff(char_u *name);
 
+// When non-zero no menu must be added or cleared.  Prevents the list of menus
+// changing while listing them.
+static int menus_locked = 0;
+
 #if defined(FEAT_MULTI_LANG) || defined(FEAT_TOOLBAR)
 static char_u *menu_skip_part(char_u *p);
 #endif
@@ -96,6 +100,21 @@ get_root_menu(char_u *name)
     if (menu_is_winbar(name))
 	return &curwin->w_winbar;
     return &root_menu;
+}
+
+/*
+ * If "menus_locked" is set then give an error and return TRUE.
+ * Otherwise return FALSE.
+ */
+    static int
+is_menus_locked(void)
+{
+    if (menus_locked > 0)
+    {
+	emsg(_(e_cannot_change_menus_while_listing));
+	return TRUE;
+    }
+    return FALSE;
 }
 
 /*
@@ -299,7 +318,7 @@ ex_menu(
     root_menu_ptr = get_root_menu(menu_path);
     if (root_menu_ptr == &curwin->w_winbar)
 	// Assume the window toolbar menu will change.
-	redraw_later(NOT_VALID);
+	redraw_later(UPD_NOT_VALID);
 
     if (enable != MAYBE)
     {
@@ -329,6 +348,9 @@ ex_menu(
     }
     else if (unmenu)
     {
+	if (is_menus_locked())
+	    goto theend;
+
 	/*
 	 * Delete menu(s).
 	 */
@@ -357,6 +379,9 @@ ex_menu(
     }
     else
     {
+	if (is_menus_locked())
+	    goto theend;
+
 	/*
 	 * Add menu(s).
 	 * Replace special key codes.
@@ -436,6 +461,7 @@ ex_menu(
 		--curwin->w_height;
 	    curwin->w_winbar_height = h;
 	}
+	curwin->w_prev_height = curwin->w_height;
     }
 
 theend:
@@ -1146,11 +1172,14 @@ show_menus(char_u *path_name, int modes)
     }
     vim_free(path_name);
 
-    // Now we have found the matching menu, and we list the mappings
-						    // Highlight title
-    msg_puts_title(_("\n--- Menus ---"));
+    // make sure the list of menus doesn't change while listing them
+    ++menus_locked;
 
+    // list the matching menu mappings
+    msg_puts_title(_("\n--- Menus ---"));
     show_menus_recursive(parent, modes, 0);
+
+    --menus_locked;
     return OK;
 }
 
@@ -2361,11 +2390,10 @@ execute_menu(exarg_T *eap, vimmenu_T *menu, int mode_idx)
     }
 
     // For the WinBar menu always use the Normal mode menu.
-    if (idx == -1 || eap == NULL)
+    if (idx == MENU_INDEX_INVALID || eap == NULL)
 	idx = MENU_INDEX_NORMAL;
 
-    if (idx != MENU_INDEX_INVALID && menu->strings[idx] != NULL
-						 && (menu->modes & (1 << idx)))
+    if (menu->strings[idx] != NULL && (menu->modes & (1 << idx)))
     {
 	// When executing a script or function execute the commands right now.
 	// Also for the window toolbar.
@@ -2891,7 +2919,7 @@ menuitem_getinfo(char_u *menu_name, vimmenu_T *menu, int modes, dict_T *dict)
 			*menu->strings[bit] == NUL
 				? (char_u *)"<Nop>"
 				: (tofree = str2special_save(
-						  menu->strings[bit], FALSE)));
+					menu->strings[bit], FALSE, FALSE)));
 		vim_free(tofree);
 	    }
 	    if (status == OK)
@@ -2945,7 +2973,7 @@ f_menu_info(typval_T *argvars, typval_T *rettv)
     vimmenu_T	*menu;
     dict_T	*retdict;
 
-    if (rettv_dict_alloc(rettv) != OK)
+    if (rettv_dict_alloc(rettv) == FAIL)
 	return;
     retdict = rettv->vval.v_dict;
 

@@ -3152,6 +3152,29 @@ regstack_pop(char_u **scan)
     regstack.ga_len -= sizeof(regitem_T);
 }
 
+#ifdef FEAT_RELTIME
+/*
+ * Check if the timer expired, return TRUE if so.
+ */
+    static int
+bt_did_time_out(int *timed_out)
+{
+    if (*timeout_flag)
+    {
+	if (timed_out != NULL)
+	{
+# ifdef FEAT_EVAL
+	    if (!*timed_out)
+		ch_log(NULL, "BT regexp timed out");
+# endif
+	    *timed_out = TRUE;
+	}
+	return TRUE;
+    }
+    return FALSE;
+}
+#endif
+
 /*
  * Save the current subexpr to "bp", so that they can be restored
  * later by restore_subexpr().
@@ -3267,10 +3290,8 @@ regmatch(
 	    break;
 	}
 #ifdef FEAT_RELTIME
-	if (*timeout_flag)
+	if (bt_did_time_out(timed_out))
 	{
-	    if (timed_out != NULL)
-		*timed_out = TRUE;
 	    status = RA_FAIL;
 	    break;
 	}
@@ -3418,10 +3439,19 @@ regmatch(
 	    break;
 
 	  case RE_VCOL:
-	    if (!re_num_cmp((long_u)win_linetabsize(
-			    rex.reg_win == NULL ? curwin : rex.reg_win,
-			    rex.line, (colnr_T)(rex.input - rex.line)) + 1, scan))
-		status = RA_NOMATCH;
+	    {
+		win_T	    *wp = rex.reg_win == NULL ? curwin : rex.reg_win;
+		linenr_T    lnum = REG_MULTI ? rex.reg_firstlnum + rex.lnum : 1;
+		long_u	    vcol;
+
+		if (REG_MULTI && (lnum <= 0
+				   || lnum > wp->w_buffer->b_ml.ml_line_count))
+		    lnum = 1;
+		vcol = (long_u)win_linetabsize(wp, lnum, rex.line,
+					      (colnr_T)(rex.input - rex.line));
+		if (!re_num_cmp(vcol + 1, scan))
+		    status = RA_NOMATCH;
+	    }
 	    break;
 
 	  case BOW:	// \<word; rex.input points to w
@@ -4687,6 +4717,14 @@ regmatch(
 	if (status == RA_CONT || rp == (regitem_T *)
 			     ((char *)regstack.ga_data + regstack.ga_len) - 1)
 	    break;
+
+#ifdef FEAT_RELTIME
+	if (bt_did_time_out(timed_out))
+	{
+	    status = RA_FAIL;
+	    break;
+	}
+#endif
     }
 
     // May need to continue with the inner loop, starting at "scan".
@@ -4804,11 +4842,12 @@ regtry(
     static long
 bt_regexec_both(
     char_u	*line,
-    colnr_T	col,		// column to start looking for match
+    colnr_T	startcol,	// column to start looking for match
     int		*timed_out)	// flag set on timeout or NULL
 {
     bt_regprog_T    *prog;
     char_u	    *s;
+    colnr_T	    col = startcol;
     long	    retval = 0L;
 
     // Create "regstack" and "backpos" if they are not allocated yet.
@@ -4976,12 +5015,8 @@ bt_regexec_both(
 	    else
 		++col;
 #ifdef FEAT_RELTIME
-	    if (*timeout_flag)
-	    {
-		if (timed_out != NULL)
-		    *timed_out = TRUE;
+	    if (bt_did_time_out(timed_out))
 		break;
-	    }
 #endif
 	}
     }
@@ -5008,11 +5043,19 @@ theend:
 	    if (end->lnum < start->lnum
 			|| (end->lnum == start->lnum && end->col < start->col))
 		rex.reg_mmatch->endpos[0] = rex.reg_mmatch->startpos[0];
+
+	    // startpos[0] may be set by "\zs", also return the column where
+	    // the whole pattern matched.
+	    rex.reg_mmatch->rmm_matchcol = col;
 	}
 	else
 	{
 	    if (rex.reg_match->endp[0] < rex.reg_match->startp[0])
 		rex.reg_match->endp[0] = rex.reg_match->startp[0];
+
+	    // startpos[0] may be set by "\zs", also return the column where
+	    // the whole pattern matched.
+	    rex.reg_match->rm_matchcol = col;
 	}
     }
 

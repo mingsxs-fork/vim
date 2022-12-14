@@ -7,6 +7,14 @@ source view_util.vim
 source check.vim
 source screendump.vim
 
+func SetUp()
+  set laststatus=2
+endfunc
+
+func TearDown()
+  set laststatus&
+endfunc
+
 func s:get_statusline()
   return ScreenLines(&lines - 1, &columns)[0]
 endfunc
@@ -35,7 +43,6 @@ endfunc
 
 func Test_caught_error_in_statusline()
   let s:func_in_statusline_called = 0
-  set laststatus=2
   let statusline = '%{StatuslineWithCaughtError()}'
   let &statusline = statusline
   redrawstatus
@@ -46,7 +53,6 @@ endfunc
 
 func Test_statusline_will_be_disabled_with_error()
   let s:func_in_statusline_called = 0
-  set laststatus=2
   let statusline = '%{StatuslineWithError()}'
   try
     let &statusline = statusline
@@ -73,7 +79,6 @@ func Test_statusline()
   call assert_match('^ ((2) of 2)\s*$', s:get_statusline())
 
   only
-  set laststatus=2
   set splitbelow
   call setline(1, range(1, 10000))
 
@@ -432,7 +437,6 @@ func Test_statusline()
   %bw!
   call delete('Xstatusline')
   set statusline&
-  set laststatus&
   set splitbelow&
 endfunc
 
@@ -466,14 +470,13 @@ func Test_statusline_removed_group()
     set laststatus=2
     let &statusline = '%#StatColorHi2#%(✓%#StatColorHi2#%) Q≡'
   END
-  call writefile(lines, 'XTest_statusline')
+  call writefile(lines, 'XTest_statusline', 'D')
 
   let buf = RunVimInTerminal('-S XTest_statusline', {'rows': 10, 'cols': 50})
   call VerifyScreenDump(buf, 'Test_statusline_1', {})
 
   " clean up
   call StopVimInTerminal(buf)
-  call delete('XTest_statusline')
 endfunc
 
 func Test_statusline_using_mode()
@@ -484,7 +487,7 @@ func Test_statusline_using_mode()
     split
     setlocal statusline=+%{mode()}+
   END
-  call writefile(lines, 'XTest_statusline')
+  call writefile(lines, 'XTest_statusline', 'D')
 
   let buf = RunVimInTerminal('-S XTest_statusline', {'rows': 7, 'cols': 50})
   call VerifyScreenDump(buf, 'Test_statusline_mode_1', {})
@@ -495,7 +498,6 @@ func Test_statusline_using_mode()
   " clean up
   call term_sendkeys(buf, "close\<CR>")
   call StopVimInTerminal(buf)
-  call delete('XTest_statusline')
 endfunc
 
 func Test_statusline_after_split_vsplit()
@@ -518,7 +520,6 @@ endfunc
 " with a custom 'statusline'
 func Test_statusline_mbyte_fillchar()
   only
-  set laststatus=2
   set fillchars=vert:\|,fold:-,stl:━,stlnc:═
   set statusline=a%=b
   call assert_match('^a\+━\+b$', s:get_statusline())
@@ -526,7 +527,7 @@ func Test_statusline_mbyte_fillchar()
   call assert_match('^a\+━\+b━a\+═\+b$', s:get_statusline())
   wincmd w
   call assert_match('^a\+═\+b═a\+━\+b$', s:get_statusline())
-  set statusline& fillchars& laststatus&
+  set statusline& fillchars&
   %bw!
 endfunc
 
@@ -549,13 +550,12 @@ func Test_statusline_highlight_truncate()
     hi! link User2 ErrorMsg
     set statusline=%.5(%1*ABC%2*DEF%1*GHI%)
   END
-  call writefile(lines, 'XTest_statusline')
+  call writefile(lines, 'XTest_statusline', 'D')
 
   let buf = RunVimInTerminal('-S XTest_statusline', {'rows': 6})
   call VerifyScreenDump(buf, 'Test_statusline_hl', {})
 
   call StopVimInTerminal(buf)
-  call delete('XTest_statusline')
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

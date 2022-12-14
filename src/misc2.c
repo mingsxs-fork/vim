@@ -85,7 +85,7 @@ getviscol2(colnr_T col, colnr_T coladd UNUSED)
 }
 
 /*
- * Try to advance the Cursor to the specified screen column.
+ * Try to advance the Cursor to the specified screen column "wantcol".
  * If virtual editing: fine tune the cursor position.
  * Note that all virtual positions off the end of a line should share
  * a curwin->w_cursor.col value (n.b. this is equal to STRLEN(line)),
@@ -94,29 +94,30 @@ getviscol2(colnr_T col, colnr_T coladd UNUSED)
  * return OK if desired column is reached, FAIL if not
  */
     int
-coladvance(colnr_T wcol)
+coladvance(colnr_T wantcol)
 {
-    int rc = getvpos(&curwin->w_cursor, wcol);
+    int rc = getvpos(&curwin->w_cursor, wantcol);
 
-    if (wcol == MAXCOL || rc == FAIL)
+    if (wantcol == MAXCOL || rc == FAIL)
 	curwin->w_valid &= ~VALID_VIRTCOL;
     else if (*ml_get_cursor() != TAB)
     {
 	// Virtcol is valid when not on a TAB
 	curwin->w_valid |= VALID_VIRTCOL;
-	curwin->w_virtcol = wcol;
+	curwin->w_virtcol = wantcol;
     }
     return rc;
 }
 
 /*
- * Return in "pos" the position of the cursor advanced to screen column "wcol".
+ * Return in "pos" the position of the cursor advanced to screen column
+ * "wantcol".
  * return OK if desired column is reached, FAIL if not
  */
     int
-getvpos(pos_T *pos, colnr_T wcol)
+getvpos(pos_T *pos, colnr_T wantcol)
 {
-    return coladvance2(pos, FALSE, virtual_active(), wcol);
+    return coladvance2(pos, FALSE, virtual_active(), wantcol);
 }
 
     static int
@@ -128,7 +129,6 @@ coladvance2(
 {
     colnr_T	wcol = wcol_arg;
     int		idx;
-    char_u	*ptr;
     char_u	*line;
     colnr_T	col = 0;
     int		csize = 0;
@@ -150,14 +150,15 @@ coladvance2(
 
 	    if ((addspaces || finetune) && !VIsual_active)
 	    {
-		curwin->w_curswant = linetabsize(line) + one_more;
+		curwin->w_curswant = linetabsize_str(line) + one_more;
 		if (curwin->w_curswant > 0)
 		    --curwin->w_curswant;
 	    }
     }
     else
     {
-	int width = curwin->w_width - win_col_off(curwin);
+	int		width = curwin->w_width - win_col_off(curwin);
+	chartabsize_T	cts;
 
 	if (finetune
 		&& curwin->w_p_wrap
@@ -165,7 +166,7 @@ coladvance2(
 		&& wcol >= (colnr_T)width
 		&& width > 0)
 	{
-	    csize = linetabsize(line);
+	    csize = linetabsize_str(line);
 	    if (csize > 0)
 		csize--;
 
@@ -180,19 +181,30 @@ coladvance2(
 	    }
 	}
 
-	ptr = line;
-	while (col <= wcol && *ptr != NUL)
+	init_chartabsize_arg(&cts, curwin, pos->lnum, 0, line, line);
+	while (cts.cts_vcol <= wcol && *cts.cts_ptr != NUL)
 	{
+#ifdef FEAT_PROP_POPUP
+	    int at_start = cts.cts_ptr == cts.cts_line;
+#endif
 	    // Count a tab for what it's worth (if list mode not on)
 #ifdef FEAT_LINEBREAK
-	    csize = win_lbr_chartabsize(curwin, line, ptr, col, &head);
-	    MB_PTR_ADV(ptr);
+	    csize = win_lbr_chartabsize(&cts, &head);
+	    MB_PTR_ADV(cts.cts_ptr);
 #else
-	    csize = lbr_chartabsize_adv(line, &ptr, col);
+	    csize = lbr_chartabsize_adv(&cts);
 #endif
-	    col += csize;
+	    cts.cts_vcol += csize;
+#ifdef FEAT_PROP_POPUP
+	    if (at_start)
+		// do not count the columns for virtual text above
+		cts.cts_vcol -= cts.cts_first_char;
+#endif
 	}
-	idx = (int)(ptr - line);
+	col = cts.cts_vcol;
+	idx = (int)(cts.cts_ptr - line);
+	clear_chartabsize_arg(&cts);
+
 	/*
 	 * Handle all the special cases.  The virtual_active() check
 	 * is needed to ensure that a virtual position off the end of
@@ -647,7 +659,6 @@ check_visual_pos(void)
     }
 }
 
-#if defined(FEAT_TEXTOBJ) || defined(PROTO)
 /*
  * Make sure curwin->w_cursor is not on the NUL at the end of the line.
  * Allow it when in Visual mode and 'selection' is not "old".
@@ -660,28 +671,29 @@ adjust_cursor_col(void)
 	    && gchar_cursor() == NUL)
 	--curwin->w_cursor.col;
 }
-#endif
 
 /*
- * When curwin->w_leftcol has changed, adjust the cursor position.
+ * Set "curwin->w_leftcol" to "leftcol".
+ * Adjust the cursor position if needed.
  * Return TRUE if the cursor was moved.
  */
     int
-leftcol_changed(void)
+set_leftcol(colnr_T leftcol)
 {
-    long	lastcol;
-    colnr_T	s, e;
     int		retval = FALSE;
-    long	siso = get_sidescrolloff_value();
+
+    // Return quickly when there is no change.
+    if (curwin->w_leftcol == leftcol)
+	return FALSE;
+    curwin->w_leftcol = leftcol;
 
     changed_cline_bef_curs();
-    lastcol = curwin->w_leftcol + curwin->w_width - curwin_col_off() - 1;
+    long lastcol = curwin->w_leftcol + curwin->w_width - curwin_col_off() - 1;
     validate_virtcol();
 
-    /*
-     * If the cursor is right or left of the screen, move it to last or first
-     * character.
-     */
+    // If the cursor is right or left of the screen, move it to last or first
+    // visible character.
+    long siso = get_sidescrolloff_value();
     if (curwin->w_virtcol > (colnr_T)(lastcol - siso))
     {
 	retval = TRUE;
@@ -693,11 +705,10 @@ leftcol_changed(void)
 	(void)coladvance((colnr_T)(curwin->w_leftcol + siso));
     }
 
-    /*
-     * If the start of the character under the cursor is not on the screen,
-     * advance the cursor one more char.  If this fails (last char of the
-     * line) adjust the scrolling.
-     */
+    // If the start of the character under the cursor is not on the screen,
+    // advance the cursor one more char.  If this fails (last char of the
+    // line) adjust the scrolling.
+    colnr_T	s, e;
     getvvcol(curwin, &curwin->w_cursor, &s, NULL, &e);
     if (e > (colnr_T)lastcol)
     {
@@ -716,7 +727,7 @@ leftcol_changed(void)
 
     if (retval)
 	curwin->w_set_curswant = TRUE;
-    redraw_later(NOT_VALID);
+    redraw_later(UPD_NOT_VALID);
     return retval;
 }
 
@@ -1505,7 +1516,8 @@ find_special_key(
  * CTRL-2 is CTRL-@
  * CTRL-6 is CTRL-^
  * CTRL-- is CTRL-_
- * Also, <C-H> and <C-h> mean the same thing, always use "H".
+ * Also, unless no_reduce_keys is set then <C-H> and <C-h> mean the same thing,
+ * use "H".
  * Returns the possibly adjusted key.
  */
     int
@@ -1514,7 +1526,12 @@ may_adjust_key_for_ctrl(int modifiers, int key)
     if (modifiers & MOD_MASK_CTRL)
     {
 	if (ASCII_ISALPHA(key))
-	    return TOUPPER_ASC(key);
+	{
+#ifdef FEAT_TERMINAL
+	    check_no_reduce_keys();  // may update the no_reduce_keys flag
+#endif
+	    return no_reduce_keys == 0 ? TOUPPER_ASC(key) : key;
+	}
 	if (key == '2')
 	    return '@';
 	if (key == '6')
@@ -1530,7 +1547,8 @@ may_adjust_key_for_ctrl(int modifiers, int key)
  * When Ctrl is also used <C-H> and <C-S-H> are different, but <C-S-{> should
  * be <C-{>.  Same for <C-S-}> and <C-S-|>.
  * Also for <A-S-a> and <M-S-a>.
- * This includes all printable ASCII characters except numbers and a-z.
+ * This includes all printable ASCII characters except a-z.
+ * Digits are included because with AZERTY the Shift key is used to get them.
  */
     int
 may_remove_shift_modifier(int modifiers, int key)
@@ -1540,6 +1558,7 @@ may_remove_shift_modifier(int modifiers, int key)
 		|| modifiers == (MOD_MASK_SHIFT | MOD_MASK_META))
 	    && ((key >= '!' && key <= '/')
 		|| (key >= ':' && key <= 'Z')
+		|| vim_isdigit(key)
 		|| (key >= '[' && key <= '`')
 		|| (key >= '{' && key <= '~')))
 	return modifiers & ~MOD_MASK_SHIFT;
@@ -1783,7 +1802,7 @@ call_shell(char_u *cmd, int opt)
     {
 	verbose_enter();
 	smsg(_("Calling shell to execute: \"%s\""), cmd == NULL ? p_sh : cmd);
-	out_char('\n');
+	msg_putchar_attr('\n', 0);
 	cursor_on();
 	verbose_leave();
     }
@@ -2015,12 +2034,12 @@ cursorentry_T shape_table[SHAPE_IDX_COUNT] =
     {0,	0, 0, 100L, 100L, 100L, 0, 0, "sm", SHAPE_CURSOR},
 };
 
-#ifdef FEAT_MOUSESHAPE
+# ifdef FEAT_MOUSESHAPE
 /*
  * Table with names for mouse shapes.  Keep in sync with all the tables for
  * mch_set_mouse_shape()!.
  */
-static char * mshape_names[] =
+static char *mshape_names[] =
 {
     "arrow",	// default, must be the first one
     "blank",	// hidden
@@ -2040,7 +2059,9 @@ static char * mshape_names[] =
     "up-arrow",
     NULL
 };
-#endif
+
+#  define MSHAPE_NAMES_COUNT  (ARRAY_LENGTH(mshape_names) - 1)
+# endif
 
 /*
  * Parse the 'guicursor' option ("what" is SHAPE_CURSOR) or 'mouseshape'
@@ -2343,7 +2364,7 @@ get_shape_idx(int mouse)
 #endif
 
 # if defined(FEAT_MOUSESHAPE) || defined(PROTO)
-static int old_mouse_shape = 0;
+static int current_mouse_shape = 0;
 
 /*
  * Set the mouse shape:
@@ -2377,18 +2398,18 @@ update_mouseshape(int shape_idx)
 	shape_idx = -2;
 
     if (shape_idx == -2
-	    && old_mouse_shape != shape_table[SHAPE_IDX_CLINE].mshape
-	    && old_mouse_shape != shape_table[SHAPE_IDX_STATUS].mshape
-	    && old_mouse_shape != shape_table[SHAPE_IDX_VSEP].mshape)
+	    && current_mouse_shape != shape_table[SHAPE_IDX_CLINE].mshape
+	    && current_mouse_shape != shape_table[SHAPE_IDX_STATUS].mshape
+	    && current_mouse_shape != shape_table[SHAPE_IDX_VSEP].mshape)
 	return;
     if (shape_idx < 0)
 	new_mouse_shape = shape_table[get_shape_idx(TRUE)].mshape;
     else
 	new_mouse_shape = shape_table[shape_idx].mshape;
-    if (new_mouse_shape != old_mouse_shape)
+    if (new_mouse_shape != current_mouse_shape)
     {
 	mch_set_mouse_shape(new_mouse_shape);
-	old_mouse_shape = new_mouse_shape;
+	current_mouse_shape = new_mouse_shape;
     }
     postponed_mouseshape = FALSE;
 }
@@ -2396,17 +2417,33 @@ update_mouseshape(int shape_idx)
 
 #endif // CURSOR_SHAPE
 
+#if defined(FEAT_EVAL) || defined(PROTO)
+/*
+ * Mainly for tests: get the name of the current mouse shape.
+ */
+    void
+f_getmouseshape(typval_T *argvars UNUSED, typval_T *rettv)
+{
+    rettv->v_type = VAR_STRING;
+    rettv->vval.v_string = NULL;
+# if defined(FEAT_MOUSESHAPE) || defined(PROTO)
+    if (current_mouse_shape >= 0
+			      && current_mouse_shape < (int)MSHAPE_NAMES_COUNT)
+	rettv->vval.v_string = vim_strsave(
+				  (char_u *)mshape_names[current_mouse_shape]);
+# endif
+}
+#endif
+
+
 
 /*
- * Change directory to "new_dir".  If FEAT_SEARCHPATH is defined, search
- * 'cdpath' for relative directory names, otherwise just mch_chdir().
+ * Change directory to "new_dir".  Search 'cdpath' for relative directory
+ * names.
  */
     int
 vim_chdir(char_u *new_dir)
 {
-#ifndef FEAT_SEARCHPATH
-    return mch_chdir((char *)new_dir);
-#else
     char_u	*dir_name;
     int		r;
 
@@ -2417,7 +2454,6 @@ vim_chdir(char_u *new_dir)
     r = mch_chdir((char *)dir_name);
     vim_free(dir_name);
     return r;
-#endif
 }
 
 /*

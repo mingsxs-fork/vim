@@ -17,7 +17,7 @@
 # define MSWIN
 #endif
 
-#ifdef MSWIN
+#if defined(MSWIN) && !defined(PROTO)
 # include <io.h>
 #endif
 
@@ -159,13 +159,19 @@
 
 /*
  * #defines for optionals and features
- * Also defines FEAT_TINY, FEAT_SMALL, etc. when FEAT_HUGE is defined.
+ * Also defines FEAT_TINY, FEAT_NORMAL, etc. when FEAT_HUGE is defined.
  */
 #include "feature.h"
 
 #if defined(MACOS_X_DARWIN)
-# if defined(FEAT_SMALL) && !defined(FEAT_CLIPBOARD)
+# if defined(FEAT_NORMAL) && !defined(FEAT_CLIPBOARD)
 #  define FEAT_CLIPBOARD
+# endif
+# if defined(FEAT_HUGE) && !defined(FEAT_SOUND)
+#  define FEAT_SOUND
+# endif
+# if defined(FEAT_SOUND)
+#  define FEAT_SOUND_MACOSX
 # endif
 #endif
 
@@ -378,7 +384,7 @@ typedef		 long		long_i;
  * We assume that when fseeko() is available then ftello() is too.
  * Note that Windows has different function names.
  */
-#ifdef MSWIN
+#if defined(MSWIN) && !defined(PROTO)
 typedef __int64 off_T;
 # ifdef __MINGW32__
 #  define vim_lseek lseek64
@@ -579,19 +585,19 @@ extern int (*dyn_libintl_wputenv)(const wchar_t *envstring);
 #endif
 
 /*
- * flags for update_screen()
- * The higher the value, the higher the priority
+ * Flags for update_screen().
+ * The higher the value, the higher the priority.
  */
-#define VALID_NO_UPDATE		 5  // no new changes, keep the command line if
+#define UPD_VALID_NO_UPDATE	 5  // no new changes, keep the command line if
 				    // possible
-#define VALID			10  // buffer not changed, or changes marked
+#define UPD_VALID		10  // buffer not changed, or changes marked
 				    // with b_mod_*
-#define INVERTED		20  // redisplay inverted part that changed
-#define INVERTED_ALL		25  // redisplay whole inverted part
-#define REDRAW_TOP		30  // display first w_upd_rows screen lines
-#define SOME_VALID		35  // like NOT_VALID but may scroll
-#define NOT_VALID		40  // buffer needs complete redraw
-#define CLEAR			50  // screen messed up, clear it
+#define UPD_INVERTED		20  // redisplay inverted part that changed
+#define UPD_INVERTED_ALL	25  // redisplay whole inverted part
+#define UPD_REDRAW_TOP		30  // display first w_upd_rows screen lines
+#define UPD_SOME_VALID		35  // like UPD_NOT_VALID but may scroll
+#define UPD_NOT_VALID		40  // buffer needs complete redraw
+#define UPD_CLEAR		50  // screen messed up, clear it
 
 // flags for screen_line()
 #define SLF_RIGHTLEFT	1
@@ -659,10 +665,13 @@ extern int (*dyn_libintl_wputenv)(const wchar_t *envstring);
 #define HL_ITALIC		0x04
 #define HL_UNDERLINE		0x08
 #define HL_UNDERCURL		0x10
-#define HL_STANDOUT		0x20
-#define HL_NOCOMBINE		0x40
-#define HL_STRIKETHROUGH	0x80
-#define HL_ALL			0xff
+#define HL_UNDERDOUBLE		0x20
+#define HL_UNDERDOTTED		0x40
+#define HL_UNDERDASHED		0x80
+#define HL_STANDOUT		0x100
+#define HL_NOCOMBINE		0x200
+#define HL_STRIKETHROUGH	0x400
+#define HL_ALL			0x7ff
 
 // special attribute addition: Put message in history
 #define MSG_HIST		0x1000
@@ -967,6 +976,11 @@ extern int (*dyn_libintl_wputenv)(const wchar_t *envstring);
 #define KEY_OPEN_BACK	0x102
 #define KEY_COMPLETE	0x103	// end of completion
 
+// Used for the first argument of do_map()
+#define MAPTYPE_MAP	0
+#define MAPTYPE_UNMAP	1
+#define MAPTYPE_NOREMAP	2
+
 // Values for "noremap" argument of ins_typebuf().  Also used for
 // map->m_noremap and menu->noremap[].
 #define REMAP_YES	0	// allow remapping
@@ -998,6 +1012,7 @@ extern int (*dyn_libintl_wputenv)(const wchar_t *envstring);
 #define READ_KEEP_UNDO	0x20	// keep undo info
 #define READ_FIFO	0x40	// read from fifo or socket
 #define READ_NOWINENTER 0x80	// do not trigger BufWinEnter
+#define READ_NOFILE	0x100	// do not read a file, do trigger BufReadCmd
 
 // Values for change_indent()
 #define INDENT_SET	1	// set indent
@@ -1200,14 +1215,15 @@ extern int (*dyn_libintl_wputenv)(const wchar_t *envstring);
 /*
  * arguments for win_split()
  */
-#define WSP_ROOM	1	// require enough room
-#define WSP_VERT	2	// split vertically
-#define WSP_TOP		4	// window at top-left of shell
-#define WSP_BOT		8	// window at bottom-right of shell
-#define WSP_HELP	16	// creating the help window
-#define WSP_BELOW	32	// put new window below/right
-#define WSP_ABOVE	64	// put new window above/left
-#define WSP_NEWLOC	128	// don't copy location list
+#define WSP_ROOM	0x01	// require enough room
+#define WSP_VERT	0x02	// split/equalize vertically
+#define WSP_HOR		0x04	// equalize horizontally
+#define WSP_TOP		0x08	// window at top-left of shell
+#define WSP_BOT		0x10	// window at bottom-right of shell
+#define WSP_HELP	0x20	// creating the help window
+#define WSP_BELOW	0x40	// put new window below/right
+#define WSP_ABOVE	0x80	// put new window above/left
+#define WSP_NEWLOC	0x100	// don't copy location list
 
 /*
  * arguments for gui_set_shellsize()
@@ -1378,6 +1394,7 @@ enum auto_event
     EVENT_TEXTCHANGED,		// text was modified not in Insert mode
     EVENT_TEXTCHANGEDI,		// text was modified in Insert mode
     EVENT_TEXTCHANGEDP,		// TextChangedI with popup menu visible
+    EVENT_TEXTCHANGEDT,		// text was modified in Terminal mode
     EVENT_TEXTYANKPOST,		// after some text was yanked
     EVENT_USER,			// user defined autocommand
     EVENT_VIMENTER,		// after starting Vim
@@ -1390,7 +1407,8 @@ enum auto_event
     EVENT_WINCLOSED,		// after closing a window
     EVENT_VIMSUSPEND,		// before Vim is suspended
     EVENT_VIMRESUME,		// after Vim is resumed
-    EVENT_WINSCROLLED,		// after Vim window was scrolled
+    EVENT_WINRESIZED,		// after a window was resized
+    EVENT_WINSCROLLED,		// after a window was scrolled or resized
 
     NUM_EVENTS			// MUST be the last one
 };
@@ -1648,7 +1666,7 @@ void *vim_memset(void *, int, size_t);
 
 /*
  * defines to avoid typecasts from (char_u *) to (char *) and back
- * (vim_strchr() and vim_strrchr() are now in alloc.c)
+ * (vim_strchr() and vim_strrchr() are now in strings.c)
  */
 #define STRLEN(s)	    strlen((char *)(s))
 #define STRCPY(d, s)	    strcpy((char *)(d), (char *)(s))
@@ -1946,8 +1964,8 @@ typedef int sock_T;
 #define MOUSE_COLOFF 10000
 
 /*
- * jump_to_mouse() returns one of first four these values, possibly with
- * some of the other three added.
+ * jump_to_mouse() returns one of first five these values, possibly with
+ * some of the other four added.
  */
 #define IN_UNKNOWN		0
 #define IN_BUFFER		1
@@ -2102,6 +2120,8 @@ typedef int sock_T;
 #define VAR_TYPE_CHANNEL    9
 #define VAR_TYPE_BLOB	    10
 #define VAR_TYPE_INSTR	    11
+#define VAR_TYPE_CLASS	    12
+#define VAR_TYPE_OBJECT	    13
 
 #define DICT_MAXNEST 100	// maximum nesting of lists and dicts
 
@@ -2239,7 +2259,16 @@ typedef enum {
     ESTACK_SCRIPT,
 } estack_arg_T;
 
+// Return value of match_keyprotocol()
+typedef enum {
+    KEYPROTOCOL_NONE,
+    KEYPROTOCOL_MOK2,
+    KEYPROTOCOL_KITTY,
+    KEYPROTOCOL_FAIL
+} keyprot_T;
+
 // Flags for assignment functions.
+#define ASSIGN_VAR	0     // ":var" (nothing special)
 #define ASSIGN_FINAL	0x01  // ":final"
 #define ASSIGN_CONST	0x02  // ":const"
 #define ASSIGN_NO_DECL	0x04  // "name = expr" without ":let"/":const"/":final"
@@ -2248,6 +2277,7 @@ typedef enum {
 #define ASSIGN_NO_MEMBER_TYPE 0x20 // use "any" for list and dict member type
 #define ASSIGN_FOR_LOOP 0x40 // assigning to loop variable
 #define ASSIGN_INIT	0x80 // not assigning a value, just a declaration
+#define ASSIGN_UPDATE_BLOCK_ID 0x100  // update sav_block_id
 
 #include "ex_cmds.h"	    // Ex command defines
 #include "spell.h"	    // spell checking stuff
@@ -2646,7 +2676,8 @@ typedef enum {
 #define TFN_NO_DECL	0x20	// only used for GLV_NO_DECL
 #define TFN_COMPILING	0x40	// only used for GLV_COMPILING
 #define TFN_NEW_FUNC	0x80	// defining a new function
-#define TFN_ASSIGN_WITH_OP	0x100	// only for GLV_ASSIGN_WITH_OP
+#define TFN_ASSIGN_WITH_OP 0x100  // only for GLV_ASSIGN_WITH_OP
+#define TFN_IN_CLASS	0x200	// function in a class
 
 // Values for get_lval() flags argument:
 #define GLV_QUIET	TFN_QUIET	// no error messages
@@ -2770,6 +2801,7 @@ long elapsed(DWORD start_tick);
 // Flags for adjust_prop_columns()
 #define APC_SAVE_FOR_UNDO	1   // call u_savesub() before making changes
 #define APC_SUBSTITUTE		2   // text is replaced, not inserted
+#define APC_INDENT		4   // changing indent
 
 #define CLIP_ZINDEX 32000
 
@@ -2811,7 +2843,7 @@ long elapsed(DWORD start_tick);
 #define UC_BUFFER	1	// -buffer: local to current buffer
 #define UC_VIM9		2	// {} argument: Vim9 syntax.
 
-// flags used by vim_strsave_escaped()
+// flags used by vim_strsave_fnameescape()
 #define VSE_NONE	0
 #define VSE_SHELL	1	// escape for a shell command
 #define VSE_BUFFER	2	// escape for a ":buffer" command
@@ -2821,4 +2853,5 @@ long elapsed(DWORD start_tick);
 #define FFED_NO_GLOBAL	2	// only check for script-local functions
 
 #define MAX_LSHIFT_BITS (varnumber_T)((sizeof(uvarnumber_T) * 8) - 1)
+
 #endif // VIM__H

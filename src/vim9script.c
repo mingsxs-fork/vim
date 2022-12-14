@@ -140,7 +140,8 @@ ex_vim9script(exarg_T *eap UNUSED)
 					 0L, (char_u *)CPO_VIM, OPT_NO_REDRAW);
     }
 #else
-    // No check for this being the first command, it doesn't matter.
+    // No check for this being the first command, the information is not
+    // available.
     current_sctx.sc_version = SCRIPT_VERSION_VIM9;
 #endif
 }
@@ -176,7 +177,8 @@ not_in_vim9(exarg_T *eap)
 }
 
 /*
- * Give an error message if "p" points at "#{" and return TRUE.
+ * Return TRUE if "p" points at "#{", not "#{{".
+ * Give an error message if not done already.
  * This avoids that using a legacy style #{} dictionary leads to difficult to
  * understand errors.
  */
@@ -185,7 +187,8 @@ vim9_bad_comment(char_u *p)
 {
     if (p[0] == '#' && p[1] == '{' && p[2] != '{')
     {
-	emsg(_(e_cannot_use_hash_curly_to_start_comment));
+	if (!did_emsg)
+	    emsg(_(e_cannot_use_hash_curly_to_start_comment));
 	return TRUE;
     }
     return FALSE;
@@ -194,12 +197,17 @@ vim9_bad_comment(char_u *p)
 
 /*
  * Return TRUE if "p" points at a "#" not followed by one '{'.
+ * Gives an error for using "#{", not for "#{{".
  * Does not check for white space.
  */
     int
 vim9_comment_start(char_u *p)
 {
+#ifdef FEAT_EVAL
+    return p[0] == '#' && !vim9_bad_comment(p);
+#else
     return p[0] == '#' && (p[1] != '{' || p[2] == '{');
+#endif
 }
 
 #if defined(FEAT_EVAL) || defined(PROTO)
@@ -238,49 +246,13 @@ ex_incdec(exarg_T *eap)
 }
 
 /*
- * ":export let Name: type"
- * ":export const Name: type"
- * ":export def Name(..."
- * ":export class Name ..."
+ * ":export cmd"
  */
     void
-ex_export(exarg_T *eap)
+ex_export(exarg_T *eap UNUSED)
 {
-    int	    prev_did_emsg = did_emsg;
-
-    if (!in_vim9script())
-    {
-	emsg(_(e_export_can_only_be_used_in_vim9script));
-	return;
-    }
-
-    eap->cmd = eap->arg;
-    (void)find_ex_command(eap, NULL, lookup_scriptitem, NULL);
-    switch (eap->cmdidx)
-    {
-	case CMD_var:
-	case CMD_final:
-	case CMD_const:
-	case CMD_def:
-	case CMD_function:
-	// case CMD_class:
-	    is_export = TRUE;
-	    do_cmdline(eap->cmd, eap->getline, eap->cookie,
-						DOCMD_VERBOSE + DOCMD_NOWAIT);
-
-	    // The command will reset "is_export" when exporting an item.
-	    if (is_export)
-	    {
-		if (did_emsg == prev_did_emsg)
-		    emsg(_(e_export_with_invalid_argument));
-		is_export = FALSE;
-	    }
-	    break;
-	default:
-	    if (did_emsg == prev_did_emsg)
-		emsg(_(e_invalid_command_after_export));
-	    break;
-    }
+    // can only get here when "export" wasn't caught in do_cmdline()
+    emsg(_(e_export_can_only_be_used_in_vim9script));
 }
 
 /*
@@ -690,6 +662,20 @@ ex_import(exarg_T *eap)
 }
 
 /*
+ * When a script is a symlink it may be imported with one name and sourced
+ * under another name.  Adjust the import script ID if needed.
+ * "*sid" must be a valid script ID.
+ */
+    void
+import_check_sourced_sid(int *sid)
+{
+    scriptitem_T *script = SCRIPT_ITEM(*sid);
+
+    if (script->sn_sourced_sid > 0)
+	*sid = script->sn_sourced_sid;
+}
+
+/*
  * Find an exported item in "sid" matching "name".
  * Either "cctx" or "cstack" is NULL.
  * When it is a variable return the index.
@@ -852,7 +838,7 @@ vim9_declare_scriptvar(exarg_T *eap, char_u *arg)
     // parse type, check for reserved name
     p = skipwhite(p + 1);
     type = parse_type(&p, &si->sn_type_list, TRUE);
-    if (type == NULL || check_reserved_name(name) == FAIL)
+    if (type == NULL || check_reserved_name(name, NULL) == FAIL)
     {
 	vim_free(name);
 	return p;
@@ -948,14 +934,16 @@ update_vim9_script_var(
 		sv->sv_flags |= SVFLAG_ASSIGNED;
 	    newsav->sav_var_vals_idx = si->sn_var_vals.ga_len;
 	    ++si->sn_var_vals.ga_len;
-	    STRCPY(&newsav->sav_key, name);
+	    // a pointer to the first char avoids a FORTIFY_SOURCE problem
+	    STRCPY(&newsav->sav_key[0], name);
 	    sv->sv_name = newsav->sav_key;
 	    newsav->sav_di = di;
 	    newsav->sav_block_id = si->sn_current_block_id;
 
 	    if (HASHITEM_EMPTY(hi))
 		// new variable name
-		hash_add(&si->sn_all_vars.dv_hashtab, newsav->sav_key);
+		hash_add(&si->sn_all_vars.dv_hashtab, newsav->sav_key,
+							       "add variable");
 	    else if (sav != NULL)
 		// existing name in a new block, append to the list
 		sav->sav_next = newsav;
@@ -1046,7 +1034,7 @@ hide_script_var(scriptitem_T *si, int idx, int func_defined)
 	    else
 	    {
 		if (sav_prev == NULL)
-		    hash_remove(all_ht, all_hi);
+		    hash_remove(all_ht, all_hi, "hide variable");
 		else
 		    sav_prev->sav_next = sav->sav_next;
 		sv->sv_name = NULL;
@@ -1138,12 +1126,17 @@ static char *reserved[] = {
 };
 
     int
-check_reserved_name(char_u *name)
+check_reserved_name(char_u *name, cctx_T *cctx)
 {
     int idx;
 
     for (idx = 0; reserved[idx] != NULL; ++idx)
-	if (STRCMP(reserved[idx], name) == 0)
+	if (STRCMP(reserved[idx], name) == 0
+		// "this" can be used in an object method
+		&& !(STRCMP("this", name) == 0
+		    && cctx != NULL
+		    && cctx->ctx_ufunc != NULL
+		    && (cctx->ctx_ufunc->uf_flags & FC_OBJECT)))
 	{
 	    semsg(_(e_cannot_use_reserved_name), name);
 	    return FAIL;

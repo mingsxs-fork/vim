@@ -1485,58 +1485,50 @@ syn_stack_equal(synstate_T *sp)
     reg_extmatch_T	*six, *bsx;
 
     // First a quick check if the stacks have the same size end nextlist.
-    if (sp->sst_stacksize == current_state.ga_len
-	    && sp->sst_next_list == current_next_list)
-    {
-	// Need to compare all states on both stacks.
-	if (sp->sst_stacksize > SST_FIX_STATES)
-	    bp = SYN_STATE_P(&(sp->sst_union.sst_ga));
-	else
-	    bp = sp->sst_union.sst_stack;
+    if (sp->sst_stacksize != current_state.ga_len
+	    || sp->sst_next_list != current_next_list)
+	return FALSE;
 
-	for (i = current_state.ga_len; --i >= 0; )
+    // Need to compare all states on both stacks.
+    if (sp->sst_stacksize > SST_FIX_STATES)
+	bp = SYN_STATE_P(&(sp->sst_union.sst_ga));
+    else
+	bp = sp->sst_union.sst_stack;
+
+    for (i = current_state.ga_len; --i >= 0; )
+    {
+	// If the item has another index the state is different.
+	if (bp[i].bs_idx != CUR_STATE(i).si_idx)
+	    break;
+	if (bp[i].bs_extmatch == CUR_STATE(i).si_extmatch)
+	    continue;
+	// When the extmatch pointers are different, the strings in them can
+	// still be the same.  Check if the extmatch references are equal.
+	bsx = bp[i].bs_extmatch;
+	six = CUR_STATE(i).si_extmatch;
+	// If one of the extmatch pointers is NULL the states are different.
+	if (bsx == NULL || six == NULL)
+	    break;
+	for (j = 0; j < NSUBEXP; ++j)
 	{
-	    // If the item has another index the state is different.
-	    if (bp[i].bs_idx != CUR_STATE(i).si_idx)
-		break;
-	    if (bp[i].bs_extmatch != CUR_STATE(i).si_extmatch)
+	    // Check each referenced match string. They must all be equal.
+	    if (bsx->matches[j] != six->matches[j])
 	    {
-		// When the extmatch pointers are different, the strings in
-		// them can still be the same.  Check if the extmatch
-		// references are equal.
-		bsx = bp[i].bs_extmatch;
-		six = CUR_STATE(i).si_extmatch;
-		// If one of the extmatch pointers is NULL the states are
-		// different.
-		if (bsx == NULL || six == NULL)
+		// If the pointer is different it can still be the same text.
+		// Compare the strings, ignore case when the start item has the
+		// sp_ic flag set.
+		if (bsx->matches[j] == NULL || six->matches[j] == NULL)
 		    break;
-		for (j = 0; j < NSUBEXP; ++j)
-		{
-		    // Check each referenced match string. They must all be
-		    // equal.
-		    if (bsx->matches[j] != six->matches[j])
-		    {
-			// If the pointer is different it can still be the
-			// same text.  Compare the strings, ignore case when
-			// the start item has the sp_ic flag set.
-			if (bsx->matches[j] == NULL
-				|| six->matches[j] == NULL)
-			    break;
-			if ((SYN_ITEMS(syn_block)[CUR_STATE(i).si_idx]).sp_ic
-				? MB_STRICMP(bsx->matches[j],
-							 six->matches[j]) != 0
-				: STRCMP(bsx->matches[j], six->matches[j]) != 0)
-			    break;
-		    }
-		}
-		if (j != NSUBEXP)
+		if ((SYN_ITEMS(syn_block)[CUR_STATE(i).si_idx]).sp_ic
+			? MB_STRICMP(bsx->matches[j], six->matches[j]) != 0
+			: STRCMP(bsx->matches[j], six->matches[j]) != 0)
 		    break;
 	    }
 	}
-	if (i < 0)
-	    return TRUE;
+	if (j != NSUBEXP)
+	    break;
     }
-    return FALSE;
+    return i < 0 ? TRUE : FALSE;
 }
 
 /*
@@ -1550,10 +1542,12 @@ syn_stack_equal(synstate_T *sp)
  * lnum ->  line below window
  */
     void
-syntax_end_parsing(linenr_T lnum)
+syntax_end_parsing(win_T *wp, linenr_T lnum)
 {
     synstate_T	*sp;
 
+    if (syn_block != wp->w_s)
+	return;  // not the right window
     sp = syn_stack_find_entry(lnum);
     if (sp != NULL && sp->sst_lnum < lnum)
 	sp = sp->sst_next;
@@ -3150,8 +3144,8 @@ syn_regexec(
     colnr_T	col,
     syn_time_T  *st UNUSED)
 {
-    int r;
-    int timed_out = FALSE;
+    int		r;
+    int		timed_out = FALSE;
 #ifdef FEAT_PROFILE
     proftime_T	pt;
 
@@ -3181,7 +3175,7 @@ syn_regexec(
     }
 #endif
 #ifdef FEAT_RELTIME
-    if (timed_out && !syn_win->w_s->b_syn_slow)
+    if (timed_out && redrawtime_limit_set && !syn_win->w_s->b_syn_slow)
     {
 	syn_win->w_s->b_syn_slow = TRUE;
 	msg(_("'redrawtime' exceeded, syntax highlighting disabled"));
@@ -3424,7 +3418,7 @@ syn_cmd_spell(exarg_T *eap, int syncing UNUSED)
     }
 
     // assume spell checking changed, force a redraw
-    redraw_win_later(curwin, NOT_VALID);
+    redraw_win_later(curwin, UPD_NOT_VALID);
 }
 
 /*
@@ -3475,7 +3469,7 @@ syn_cmd_iskeyword(exarg_T *eap, int syncing UNUSED)
 	    curbuf->b_p_isk = save_isk;
 	}
     }
-    redraw_win_later(curwin, NOT_VALID);
+    redraw_win_later(curwin, UPD_NOT_VALID);
 }
 
 /*
@@ -3705,7 +3699,7 @@ syn_cmd_clear(exarg_T *eap, int syncing)
 	    arg = skipwhite(arg_end);
 	}
     }
-    redraw_curbuf_later(SOME_VALID);
+    redraw_curbuf_later(UPD_SOME_VALID);
     syn_stack_free_all(curwin->w_s);		// Need to recompute all syntax.
 }
 
@@ -4345,7 +4339,7 @@ syn_clear_keyword(int id, hashtab_T *ht)
 		    if (kp_prev == NULL)
 		    {
 			if (kp_next == NULL)
-			    hash_remove(ht, hi);
+			    hash_remove(ht, hi, "syntax clear keyword");
 			else
 			    hi->hi_key = KE2HIKEY(kp_next);
 		    }
@@ -4898,7 +4892,7 @@ error:
     else
 	semsg(_(e_invalid_argument_str), arg);
 
-    redraw_curbuf_later(SOME_VALID);
+    redraw_curbuf_later(UPD_SOME_VALID);
     syn_stack_free_all(curwin->w_s);		// Need to recompute all syntax.
 }
 
@@ -4989,7 +4983,7 @@ syn_cmd_match(
 		++curwin->w_s->b_syn_folditems;
 #endif
 
-	    redraw_curbuf_later(SOME_VALID);
+	    redraw_curbuf_later(UPD_SOME_VALID);
 	    syn_stack_free_all(curwin->w_s);	// Need to recompute all syntax.
 	    return;	// don't free the progs and patterns now
 	}
@@ -5241,7 +5235,7 @@ syn_cmd_region(
 		}
 	    }
 
-	    redraw_curbuf_later(SOME_VALID);
+	    redraw_curbuf_later(UPD_SOME_VALID);
 	    syn_stack_free_all(curwin->w_s);	// Need to recompute all syntax.
 	    success = TRUE;	    // don't free the progs and patterns now
 	}
@@ -5593,7 +5587,7 @@ syn_cmd_cluster(exarg_T *eap, int syncing UNUSED)
 
 	if (got_clstr)
 	{
-	    redraw_curbuf_later(SOME_VALID);
+	    redraw_curbuf_later(UPD_SOME_VALID);
 	    syn_stack_free_all(curwin->w_s);	// Need to recompute all.
 	}
     }
@@ -5870,7 +5864,7 @@ syn_cmd_sync(exarg_T *eap, int syncing UNUSED)
     else if (!finished)
     {
 	set_nextcmd(eap, arg_start);
-	redraw_curbuf_later(SOME_VALID);
+	redraw_curbuf_later(UPD_SOME_VALID);
 	syn_stack_free_all(curwin->w_s);	// Need to recompute all syntax.
     }
 }
@@ -6349,7 +6343,8 @@ static enum
     EXP_SUBCMD,	    // expand ":syn" sub-commands
     EXP_CASE,	    // expand ":syn case" arguments
     EXP_SPELL,	    // expand ":syn spell" arguments
-    EXP_SYNC	    // expand ":syn sync" arguments
+    EXP_SYNC,	    // expand ":syn sync" arguments
+    EXP_CLUSTER	    // expand ":syn list @cluster" arguments
 } expand_what;
 
 /*
@@ -6404,10 +6399,17 @@ set_context_in_syntax_cmd(expand_T *xp, char_u *arg)
 		expand_what = EXP_SPELL;
 	    else if (STRNICMP(arg, "sync", p - arg) == 0)
 		expand_what = EXP_SYNC;
-	    else if (  STRNICMP(arg, "keyword", p - arg) == 0
+	    else if (STRNICMP(arg, "list", p - arg) == 0)
+	    {
+		p = skipwhite(p);
+		if (*p == '@')
+		    expand_what = EXP_CLUSTER;
+		else
+		    xp->xp_context = EXPAND_HIGHLIGHT;
+	    }
+	    else if (STRNICMP(arg, "keyword", p - arg) == 0
 		    || STRNICMP(arg, "region", p - arg) == 0
-		    || STRNICMP(arg, "match", p - arg) == 0
-		    || STRNICMP(arg, "list", p - arg) == 0)
+		    || STRNICMP(arg, "match", p - arg) == 0)
 		xp->xp_context = EXPAND_HIGHLIGHT;
 	    else
 		xp->xp_context = EXPAND_NOTHING;
@@ -6420,7 +6422,7 @@ set_context_in_syntax_cmd(expand_T *xp, char_u *arg)
  * expansion.
  */
     char_u *
-get_syntax_name(expand_T *xp UNUSED, int idx)
+get_syntax_name(expand_T *xp, int idx)
 {
     switch (expand_what)
     {
@@ -6444,6 +6446,17 @@ get_syntax_name(expand_T *xp UNUSED, int idx)
 		 "linebreaks=", "linecont", "lines=", "match",
 		 "maxlines=", "minlines=", "region", NULL};
 	    return (char_u *)sync_args[idx];
+	}
+	case EXP_CLUSTER:
+	{
+	    if (idx < curwin->w_s->b_syn_clusters.ga_len)
+	    {
+		vim_snprintf((char *)xp->xp_buf, EXPAND_BUF_LEN, "@%s",
+					 SYN_CLSTR(curwin->w_s)[idx].scl_name);
+		return xp->xp_buf;
+	    }
+	    else
+		return NULL;
 	}
     }
     return NULL;
@@ -6683,7 +6696,7 @@ syntime_report(void)
 {
     int		idx;
     synpat_T	*spp;
-# if defined(FEAT_RELTIME) && defined(FEAT_FLOAT)
+# if defined(FEAT_RELTIME)
     proftime_T	tm;
 # endif
     int		len;
@@ -6713,7 +6726,7 @@ syntime_report(void)
 	    p->match = spp->sp_time.match;
 	    total_count += spp->sp_time.count;
 	    p->slowest = spp->sp_time.slowest;
-# if defined(FEAT_RELTIME) && defined(FEAT_FLOAT)
+# if defined(FEAT_RELTIME)
 	    profile_divide(&spp->sp_time.total, spp->sp_time.count, &tm);
 	    p->average = tm;
 # endif
@@ -6747,10 +6760,8 @@ syntime_report(void)
 	msg_puts(profile_msg(&p->slowest));
 	msg_puts(" ");
 	msg_advance(38);
-# ifdef FEAT_FLOAT
 	msg_puts(profile_msg(&p->average));
 	msg_puts(" ");
-# endif
 	msg_advance(50);
 	msg_outtrans(highlight_group_name(p->id - 1));
 	msg_puts(" ");

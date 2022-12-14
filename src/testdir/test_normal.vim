@@ -4,6 +4,7 @@ source shared.vim
 source check.vim
 source view_util.vim
 import './vim9.vim' as v9
+source screendump.vim
 
 func Setup_NewWindow()
   10new
@@ -248,9 +249,10 @@ func Test_normal_formatexpr_returns_nonzero()
   setlocal formatexpr=Format()
   normal VGgq
   call assert_equal(['one two'], getline(1, '$'))
+
   setlocal formatexpr=
   delfunc Format
-  close!
+  bwipe!
 endfunc
 
 " Test for using a script-local function for 'formatexpr'
@@ -298,7 +300,7 @@ func Test_normal06_formatprg()
   CheckNotMSWindows
 
   " uses sed to number non-empty lines
-  call writefile(['#!/bin/sh', 'sed ''/./=''|sed ''/./{', 'N', 's/\n/    /', '}'''], 'Xsed_format.sh')
+  call writefile(['#!/bin/sh', 'sed ''/./=''|sed ''/./{', 'N', 's/\n/    /', '}'''], 'Xsed_format.sh', 'D')
   call system('chmod +x ./Xsed_format.sh')
   let text = ['a', '', 'c', '', ' ', 'd', 'e']
   let expected = ['1    a', '', '3    c', '', '5     ', '6    d', '7    e']
@@ -329,7 +331,6 @@ func Test_normal06_formatprg()
   " clean up
   set formatprg=
   setlocal formatprg=
-  call delete('Xsed_format.sh')
 endfunc
 
 func Test_normal07_internalfmt()
@@ -701,11 +702,10 @@ func Test_opfunc_callback()
     call writefile([execute('messages')], 'Xtest.out')
     qall
   END
-  call writefile(cleanup, 'Xverify.vim')
+  call writefile(cleanup, 'Xverify.vim', 'D')
   call RunVim([], [], "-c \"set opfunc=s:abc\" -S Xverify.vim")
   call assert_match('E81: Using <SID> not in a', readfile('Xtest.out')[0])
   call delete('Xtest.out')
-  call delete('Xverify.vim')
 
   " cleanup
   set opfunc&
@@ -1280,7 +1280,7 @@ func Test_vert_scroll_cmds()
   call assert_equal(15, line('w$'))
 
   set foldenable&
-  close!
+  bwipe!
 endfunc
 
 func Test_scroll_in_ex_mode()
@@ -1291,11 +1291,10 @@ func Test_scroll_in_ex_mode()
       call writefile(['done'], 'Xdone')
       qa!
   END
-  call writefile(lines, 'Xscript')
+  call writefile(lines, 'Xscript', 'D')
   call assert_equal(1, RunVim([], [], '--clean -X -Z -e -s -S Xscript'))
   call assert_equal(['done'], readfile('Xdone'))
 
-  call delete('Xscript')
   call delete('Xdone')
 endfunc
 
@@ -1708,16 +1707,14 @@ endfunc
 func Test_normal20_exmode()
   " Reading from redirected file doesn't work on MS-Windows
   CheckNotMSWindows
-  call writefile(['1a', 'foo', 'bar', '.', 'w! Xfile2', 'q!'], 'Xscript')
-  call writefile(['1', '2'], 'Xfile')
-  call system(GetVimCommand() .. ' -e -s < Xscript Xfile')
-  let a=readfile('Xfile2')
+  call writefile(['1a', 'foo', 'bar', '.', 'w! Xn20file2', 'q!'], 'Xn20script', 'D')
+  call writefile(['1', '2'], 'Xn20file', 'D')
+  call system(GetVimCommand() .. ' -e -s < Xn20script Xn20file')
+  let a = readfile('Xn20file2')
   call assert_equal(['1', 'foo', 'bar', '2'], a)
 
   " clean up
-  for file in ['Xfile', 'Xfile2', 'Xscript']
-    call delete(file)
-  endfor
+  call delete('Xn20file2')
   bw!
 endfunc
 
@@ -1757,24 +1754,21 @@ func Test_normal22_zet()
   " Test for ZZ
   " let shell = &shell
   " let &shell = 'sh'
-  call writefile(['1', '2'], 'Xfile')
+  call writefile(['1', '2'], 'Xn22file', 'D')
   let args = ' -N -i NONE --noplugins -X --not-a-term'
-  call system(GetVimCommand() .. args .. ' -c "%d" -c ":norm! ZZ" Xfile')
-  let a = readfile('Xfile')
+  call system(GetVimCommand() .. args .. ' -c "%d" -c ":norm! ZZ" Xn22file')
+  let a = readfile('Xn22file')
   call assert_equal([], a)
   " Test for ZQ
-  call writefile(['1', '2'], 'Xfile')
-  call system(GetVimCommand() . args . ' -c "%d" -c ":norm! ZQ" Xfile')
-  let a = readfile('Xfile')
+  call writefile(['1', '2'], 'Xn22file')
+  call system(GetVimCommand() . args . ' -c "%d" -c ":norm! ZQ" Xn22file')
+  let a = readfile('Xn22file')
   call assert_equal(['1', '2'], a)
 
   " Unsupported Z command
   call assert_beeps('normal! ZW')
 
   " clean up
-  for file in ['Xfile']
-    call delete(file)
-  endfor
   " let &shell = shell
 endfunc
 
@@ -1993,9 +1987,16 @@ func Test_normal27_bracket()
   call assert_equal(5, line('.'))
   call assert_equal(3, col('.'))
 
-  " No mark after line 21, cursor moves to first non blank on current line
+  " No mark before line 1, cursor moves to first non-blank on current line
+  1
+  norm! 5|['
+  call assert_equal('  1   b', getline('.'))
+  call assert_equal(1, line('.'))
+  call assert_equal(3, col('.'))
+
+  " No mark after line 21, cursor moves to first non-blank on current line
   21
-  norm! $]'
+  norm! 5|]'
   call assert_equal('  21   b', getline('.'))
   call assert_equal(21, line('.'))
   call assert_equal(3, col('.'))
@@ -2008,6 +2009,34 @@ func Test_normal27_bracket()
 
   " Test for ]`
   norm! ]`
+  call assert_equal('  20   b', getline('.'))
+  call assert_equal(20, line('.'))
+  call assert_equal(8, col('.'))
+
+  " No mark before line 1, cursor does not move
+  1
+  norm! 5|[`
+  call assert_equal('  1   b', getline('.'))
+  call assert_equal(1, line('.'))
+  call assert_equal(5, col('.'))
+
+  " No mark after line 21, cursor does not move
+  21
+  norm! 5|]`
+  call assert_equal('  21   b', getline('.'))
+  call assert_equal(21, line('.'))
+  call assert_equal(5, col('.'))
+
+  " Count too large for [`
+  " cursor moves to first lowercase mark
+  norm! 99[`
+  call assert_equal('  1   b', getline('.'))
+  call assert_equal(1, line('.'))
+  call assert_equal(7, col('.'))
+
+  " Count too large for ]`
+  " cursor moves to last lowercase mark
+  norm! 99]`
   call assert_equal('  20   b', getline('.'))
   call assert_equal(20, line('.'))
   call assert_equal(8, col('.'))
@@ -2262,7 +2291,7 @@ func Test_normal_section()
   call assert_equal(2, line('.'))
   call assert_equal(-1, foldclosedend(line('.')))
 
-  close!
+  bwipe!
 endfunc
 
 " Test for changing case using u, U, gu, gU and ~ (tilde) commands
@@ -2359,7 +2388,8 @@ func Test_normal_changecase_turkish()
     " can't use Turkish locale
     throw 'Skipped: Turkish locale not available'
   endtry
-  close!
+
+  bwipe!
 endfunc
 
 " Test for r (replace) command
@@ -2458,9 +2488,9 @@ func Test_normal33_g_cmd2()
   call assert_equal(2, line('.'))
   call assert_fails(':norm! g;', 'E662:')
   call assert_fails(':norm! g,', 'E663:')
-  let &ul=&ul
+  let &ul = &ul
   call append('$', ['a', 'b', 'c', 'd'])
-  let &ul=&ul
+  let &ul = &ul
   call append('$', ['Z', 'Y', 'X', 'W'])
   let a = execute(':changes')
   call assert_match('2\s\+0\s\+2', a)
@@ -2887,7 +2917,8 @@ func Test_normal_nvend()
   call assert_equal([4, 5], [line('.'), col('.')])
   exe "normal! \<C-End>"
   call assert_equal([10, 6], [line('.'), col('.')])
-  close!
+
+  bwipe!
 endfunc
 
 " Test for cw cW ce
@@ -2943,12 +2974,6 @@ func Test_normal40_ctrl_bsl()
   call assert_equal('are   some words', getline(1))
   call assert_false(&insertmode)
   call assert_beeps("normal! \<C-\>\<C-A>")
-
-  if has('cmdwin')
-    " Using CTRL-\ CTRL-N in cmd window should close the window
-    call feedkeys("q:\<C-\>\<C-N>", 'xt')
-    call assert_equal('', getcmdwintype())
-  endif
 
   " clean up
   bw!
@@ -3080,15 +3105,18 @@ endfunc
 func Test_normal50_commandline()
   CheckFeature timers
   CheckFeature cmdline_hist
+
   func! DoTimerWork(id)
     call assert_equal('[Command Line]', bufname(''))
+
     " should fail, with E11, but does fail with E23?
     "call feedkeys("\<c-^>", 'tm')
 
-    " should also fail with E11
+    " should fail with E11 - "Invalid in command-line window"
     call assert_fails(":wincmd p", 'E11:')
-    " return from commandline window
-    call feedkeys("\<cr>")
+
+    " Return from commandline window.
+    call feedkeys("\<CR>", 't')
   endfunc
 
   let oldlang=v:lang
@@ -3101,7 +3129,9 @@ func Test_normal50_commandline()
   catch /E23/
     " no-op
   endtry
+
   " clean up
+  delfunc DoTimerWork
   set updatetime=4000
   exe "lang" oldlang
   bw!
@@ -3111,7 +3141,7 @@ func Test_normal51_FileChangedRO()
   CheckFeature autocmd
   " Don't sleep after the warning message.
   call test_settime(1)
-  call writefile(['foo'], 'Xreadonly.log')
+  call writefile(['foo'], 'Xreadonly.log', 'D')
   new Xreadonly.log
   setl ro
   au FileChangedRO <buffer> :call feedkeys("\<c-^>", 'tix')
@@ -3122,7 +3152,6 @@ func Test_normal51_FileChangedRO()
   " cleanup
   call test_settime(0)
   bw!
-  call delete("Xreadonly.log")
 endfunc
 
 func Test_normal52_rl()
@@ -3266,6 +3295,20 @@ func Test_message_when_using_ctrl_c()
   bwipe!
 endfunc
 
+func Test_mode_updated_after_ctrl_c()
+  CheckScreendump
+
+  let buf = RunVimInTerminal('', {'rows': 5})
+  call term_sendkeys(buf, "i")
+  call term_sendkeys(buf, "\<C-O>")
+  " wait a moment so that the "-- (insert) --" message is displayed
+  call TermWait(buf, 50)
+  call term_sendkeys(buf, "\<C-C>")
+  call VerifyScreenDump(buf, 'Test_mode_updated_1', {})
+
+  call StopVimInTerminal(buf)
+endfunc
+
 " Test for '[m', ']m', '[M' and ']M'
 " Jumping to beginning and end of methods in Java-like languages
 func Test_java_motion()
@@ -3355,7 +3398,7 @@ func Test_java_motion()
   call assert_equal([7, 8, 15], [line('.'), col('.'), virtcol('.')])
   call assert_equal(-1, foldclosedend(7))
 
-  close!
+  bwipe!
 endfunc
 
 " Tests for g cmds
@@ -3470,7 +3513,8 @@ func Test_normal_yank_with_excmd()
   let @a = ''
   call feedkeys("\"ay:if v:true\<CR>normal l\<CR>endif\<CR>", 'xt')
   call assert_equal('f', @a)
-  close!
+
+  bwipe!
 endfunc
 
 " Test for supplying a count to a normal-mode command across a cursorhold call
@@ -3491,7 +3535,8 @@ func Test_normal_cursorhold_with_count()
     au!
   augroup END
   au! normalcHoldTest
-  close!
+
+  bwipe!
   delfunc s:cHold
 endfunc
 
@@ -3515,7 +3560,8 @@ func Test_horiz_motion()
   call assert_equal(11, col('.'))
   exe "normal! $\<C-BS>"
   call assert_equal(10, col('.'))
-  close!
+
+  bwipe!
 endfunc
 
 " Test for using a : command in operator pending mode
@@ -3523,7 +3569,7 @@ func Test_normal_colon_op()
   new
   call setline(1, ['one', 'two'])
   call assert_beeps("normal! Gc:d\<CR>")
-  close!
+  bwipe!
 endfunc
 
 " Test for d and D commands
@@ -3548,7 +3594,7 @@ func Test_normal_delete_cmd()
   call assert_fails('normal D', 'E21:')
   call assert_fails('normal d$', 'E21:')
 
-  close!
+  bwipe!
 endfunc
 
 " Test for deleting or changing characters across lines with 'whichwrap'
@@ -3568,7 +3614,8 @@ func Test_normal_op_across_lines()
   call setline(1, ['one two', 'three four'])
   exe "norm! $3x"
   call assert_equal(['one twhree four'], getline(1, '$'))
-  close!
+
+  bwipe!
   set whichwrap&
 endfunc
 
@@ -3606,23 +3653,54 @@ func Test_normal_word_move()
   normal 3Gyb
   call assert_equal("two\n  ", @")
 
-  close!
+  bwipe!
 endfunc
 
 " Test for 'scrolloff' with a long line that doesn't fit in the screen
-func Test_normal_scroloff()
+func Test_normal_scrolloff()
   10new
-  80vnew
-  call setline(1, repeat('a', 1000))
+  60vnew
+  call setline(1, ' 1 ' .. repeat('a', 57)
+             \ .. ' 2 ' .. repeat('b', 57)
+             \ .. ' 3 ' .. repeat('c', 57)
+             \ .. ' 4 ' .. repeat('d', 57)
+             \ .. ' 5 ' .. repeat('e', 57)
+             \ .. ' 6 ' .. repeat('f', 57)
+             \ .. ' 7 ' .. repeat('g', 57)
+             \ .. ' 8 ' .. repeat('h', 57)
+             \ .. ' 9 ' .. repeat('i', 57)
+             \ .. '10 ' .. repeat('j', 57)
+             \ .. '11 ' .. repeat('k', 57)
+             \ .. '12 ' .. repeat('l', 57)
+             \ .. '13 ' .. repeat('m', 57)
+             \ .. '14 ' .. repeat('n', 57)
+             \ .. '15 ' .. repeat('o', 57)
+             \ .. '16 ' .. repeat('p', 57)
+             \ .. '17 ' .. repeat('q', 57)
+             \ .. '18 ' .. repeat('r', 57)
+             \ .. '19 ' .. repeat('s', 57)
+             \ .. '20 ' .. repeat('t', 57)
+             \ .. '21 ' .. repeat('u', 57)
+             \ .. '22 ' .. repeat('v', 57)
+             \ .. '23 ' .. repeat('w', 57)
+             \ .. '24 ' .. repeat('x', 57)
+             \ .. '25 ' .. repeat('y', 57)
+             \ .. '26 ' .. repeat('z', 57)
+             \ )
   set scrolloff=10
   normal gg10gj
-  call assert_equal(8, winline())
+  call assert_equal(6, winline())
   normal 10gj
-  call assert_equal(10, winline())
+  call assert_equal(6, winline())
   normal 10gk
-  call assert_equal(3, winline())
+  call assert_equal(6, winline())
+  normal 0
+  call assert_equal(1, winline())
+  normal $
+  call assert_equal(10, winline())
+
   set scrolloff&
-  close!
+  bwipe!
 endfunc
 
 " Test for vertical scrolling with CTRL-F and CTRL-B with a long line
@@ -3642,7 +3720,8 @@ func Test_normal_vert_scroll_longline()
   exe "normal \<C-B>\<C-B>"
   call assert_equal(5, line('.'))
   call assert_equal(5, winline())
-  close!
+
+  bwipe!
 endfunc
 
 " Test for jumping in a file using %
@@ -3655,7 +3734,8 @@ func Test_normal_percent_jump()
   call feedkeys('50%', 'xt')
   call assert_equal(50, line('.'))
   call assert_equal(-1, foldclosedend(50))
-  close!
+
+  bwipe!
 endfunc
 
 " Test for << and >> commands to shift text by 'shiftwidth'
@@ -3740,6 +3820,40 @@ func Test_normal_count_out_of_range()
   normal 44444444444y44444444444|
   call assert_equal(999999999, v:count)
   bwipe!
+endfunc
+
+" Test that mouse shape is restored to Normal mode after failed "c" operation.
+func Test_mouse_shape_after_failed_change()
+  CheckFeature mouseshape
+  CheckCanRunGui
+
+  let lines =<< trim END
+    vim9script
+    set mouseshape+=o:busy
+    setlocal nomodifiable
+    var mouse_shapes = []
+
+    feedkeys('c')
+    timer_start(50, (_) => {
+      mouse_shapes += [getmouseshape()]
+      timer_start(50, (_) => {
+        feedkeys('c')
+        timer_start(50, (_) => {
+          mouse_shapes += [getmouseshape()]
+          timer_start(50, (_) => {
+            writefile(mouse_shapes, 'Xmouseshapes')
+            quit
+          })
+        })
+      })
+    })
+  END
+  call writefile(lines, 'Xmouseshape.vim', 'D')
+  call RunVim([], [], "-g -S Xmouseshape.vim")
+  sleep 300m
+  call assert_equal(['busy', 'arrow'], readfile('Xmouseshapes'))
+
+  call delete('Xmouseshapes')
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

@@ -583,21 +583,29 @@ func Test_mkview_open_folds()
 
   call append(0, ['a', 'b', 'c'])
   1,3fold
-  " zR affects 'foldlevel', make sure the option is applied after the folds
-  " have been recreated.
-  normal zR
   write! Xtestfile
 
+  call assert_notequal(-1, foldclosed(1))
+  call assert_notequal(-1, foldclosed(2))
+  call assert_notequal(-1, foldclosed(3))
+
+  " Save the view with folds closed
+  mkview! Xtestview
+
+  " zR affects 'foldlevel', make sure the option is applied after the folds
+  " have been recreated.
+  " Open folds to ensure they get closed when restoring the view
+  normal zR
+
   call assert_equal(-1, foldclosed(1))
   call assert_equal(-1, foldclosed(2))
   call assert_equal(-1, foldclosed(3))
 
-  mkview! Xtestview
   source Xtestview
 
-  call assert_equal(-1, foldclosed(1))
-  call assert_equal(-1, foldclosed(2))
-  call assert_equal(-1, foldclosed(3))
+  call assert_notequal(-1, foldclosed(1))
+  call assert_notequal(-1, foldclosed(2))
+  call assert_notequal(-1, foldclosed(3))
 
   call delete('Xtestview')
   call delete('Xtestfile')
@@ -1090,14 +1098,13 @@ func Test_mksession_shortmess_with_A()
   bwipe!
 
   " Recreate the swap file to pretend the file is being edited
-  call writefile(cont, fname)
+  call writefile(cont, fname, 'D')
   set shortmess+=A
   source Xtestsession
 
   set shortmess&
   set sessionoptions&
   call delete('Xtestsession')
-  call delete(fname)
 endfunc
 
 " Test for mksession with 'compatible' option
@@ -1227,8 +1234,8 @@ endfunc
 
 " Test for creating views with manual folds
 func Test_mkview_manual_fold()
-  call writefile(range(1,10), 'Xfile')
-  new Xfile
+  call writefile(range(1,10), 'Xmkvfile', 'D')
+  new Xmkvfile
   " create recursive folds
   5,6fold
   4,7fold
@@ -1251,7 +1258,6 @@ func Test_mkview_manual_fold()
   source Xview
   call assert_equal([-1, -1, -1, -1, -1, -1], [foldclosed(3), foldclosed(4),
         \ foldclosed(5), foldclosed(6), foldclosed(7), foldclosed(8)])
-  call delete('Xfile')
   call delete('Xview')
   bw!
 endfunc

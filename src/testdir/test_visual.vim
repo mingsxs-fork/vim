@@ -483,6 +483,18 @@ func Test_visual_block_put()
   bw!
 endfunc
 
+func Test_visual_block_put_invalid()
+  enew!
+  behave mswin
+  norm yy
+  norm v)Ps/^/	
+  " this was causing the column to become negative
+  silent norm ggv)P
+
+  bwipe!
+  behave xterm
+endfunc
+
 " Visual modes (v V CTRL-V) followed by an operator; count; repeating
 func Test_visual_mode_op()
   new
@@ -1262,7 +1274,7 @@ func Test_visual_block_with_virtualedit()
     set virtualedit=block
     normal G
   END
-  call writefile(lines, 'XTest_block')
+  call writefile(lines, 'XTest_block', 'D')
 
   let buf = RunVimInTerminal('-S XTest_block', {'rows': 8, 'cols': 50})
   call term_sendkeys(buf, "\<C-V>gg$")
@@ -1274,11 +1286,10 @@ func Test_visual_block_with_virtualedit()
   " clean up
   call term_sendkeys(buf, "\<Esc>")
   call StopVimInTerminal(buf)
-  call delete('XTest_block')
 endfunc
 
 func Test_visual_block_ctrl_w_f()
-  " Emtpy block selected in new buffer should not result in an error.
+  " Empty block selected in new buffer should not result in an error.
   au! BufNew foo sil norm f
   edit foo
 
@@ -1319,11 +1330,10 @@ func Test_visual_reselect_with_count()
 
       :
   END
-  call writefile(lines, 'XvisualReselect')
+  call writefile(lines, 'XvisualReselect', 'D')
   source XvisualReselect
 
   bwipe!
-  call delete('XvisualReselect')
 endfunc
 
 func Test_visual_block_insert_round_off()
@@ -1469,5 +1479,36 @@ func Test_visual_paste_clipboard()
   bwipe!
 endfunc
 
+func Test_visual_area_adjusted_when_hiding()
+  " The Visual area ended after the end of the line after :hide
+  call setline(1, 'xxx')
+  vsplit Xvaafile
+  call setline(1, 'xxxxxxxx')
+  norm! $o
+  hid
+  norm! zW
+  bwipe!
+  bwipe!
+endfunc
+
+func Test_switch_buffer_ends_visual_mode()
+  enew
+  call setline(1, 'foo')
+  set hidden
+  set virtualedit=all
+  let buf1 = bufnr()
+  enew
+  let buf2 = bufnr()
+  call setline(1, ['', '', '', ''])
+  call cursor(4, 5)
+  call feedkeys("\<C-V>3k4h", 'xt')
+  exe 'buffer' buf1
+  call assert_equal('n', mode())
+
+  set nohidden
+  set virtualedit=
+  bwipe!
+  exe 'bwipe!' buf2
+endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

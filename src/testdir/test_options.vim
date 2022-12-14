@@ -65,7 +65,9 @@ func Test_pastetoggle()
   let &pastetoggle = str
   call assert_equal(str, &pastetoggle)
   call assert_equal("\n  pastetoggle=" .. strtrans(str), execute('set pastetoggle?'))
+
   unlet str
+  set pastetoggle&
 endfunc
 
 func Test_wildchar()
@@ -272,7 +274,7 @@ func Test_set_completion()
   call feedkeys(":setglobal di\<C-A>\<C-B>\"\<CR>", 'tx')
   call assert_equal('"setglobal dictionary diff diffexpr diffopt digraph directory display', @:)
 
-  " Expand boolan options. When doing :set no<Tab>
+  " Expand boolean options. When doing :set no<Tab>
   " vim displays the options names without "no" but completion uses "no...".
   call feedkeys(":set nodi\<C-A>\<C-B>\"\<CR>", 'tx')
   call assert_equal('"set nodiff digraph', @:)
@@ -464,9 +466,17 @@ func Test_set_errors()
   call assert_fails('set sessionoptions=curdir,sesdir', 'E474:')
   call assert_fails('set foldmarker={{{,', 'E474:')
   call assert_fails('set sessionoptions=sesdir,curdir', 'E474:')
-  call assert_fails('set listchars=trail:· ambiwidth=double', 'E834:')
+  setlocal listchars=trail:·
+  call assert_fails('set ambiwidth=double', 'E834:')
+  setlocal listchars=trail:-
+  setglobal listchars=trail:·
+  call assert_fails('set ambiwidth=double', 'E834:')
   set listchars&
-  call assert_fails('set fillchars=stl:· ambiwidth=double', 'E835:')
+  setlocal fillchars=stl:·
+  call assert_fails('set ambiwidth=double', 'E835:')
+  setlocal fillchars=stl:-
+  setglobal fillchars=stl:·
+  call assert_fails('set ambiwidth=double', 'E835:')
   set fillchars&
   call assert_fails('set fileencoding=latin1,utf-8', 'E474:')
   set nomodifiable
@@ -682,7 +692,7 @@ func Test_backupskip()
       call writefile(['errors:'] + v:errors, 'Xtestout')
       qall
   [CODE]
-  call writefile(after, 'Xafter')
+  call writefile(after, 'Xafter', 'D')
   let cmd = GetVimProg() . ' --not-a-term -S Xafter --cmd "set enc=utf8"'
 
   let saveenv = {}
@@ -700,7 +710,6 @@ func Test_backupskip()
   endfor
 
   call delete('Xtestout')
-  call delete('Xafter')
 
   " Duplicates should be filtered out (option has P_NODUP)
   let backupskip = &backupskip
@@ -712,7 +721,7 @@ func Test_backupskip()
   let &backupskip = backupskip
 endfunc
 
-func Test_copy_winopt()
+func Test_buf_copy_winopt()
   set hidden
 
   " Test copy option from current buffer in window
@@ -766,6 +775,108 @@ func Test_copy_winopt()
   set hidden&
 endfunc
 
+def Test_split_copy_options()
+  var values = [
+    ['cursorbind', true, false],
+    ['fillchars', '"vert:-"', '"' .. &fillchars .. '"'],
+    ['list', true, 0],
+    ['listchars', '"space:-"', '"' .. &listchars .. '"'],
+    ['number', true, 0],
+    ['relativenumber', true, false],
+    ['scrollbind', true, false],
+    ['smoothscroll', true, false],
+    ['virtualedit', '"block"', '"' .. &virtualedit .. '"'],
+    ['wincolor', '"Search"', '"' .. &wincolor .. '"'],
+    ['wrap', false, true],
+  ]
+  if has('linebreak')
+    values += [
+      ['breakindent', true, false],
+      ['breakindentopt', '"min:5"', '"' .. &breakindentopt .. '"'],
+      ['linebreak', true, false],
+      ['numberwidth', 7, 4],
+      ['showbreak', '"++"', '"' .. &showbreak .. '"'],
+    ]
+  endif
+  if has('rightleft')
+    values += [
+      ['rightleft', true, false],
+      ['rightleftcmd', '"search"', '"' .. &rightleftcmd .. '"'],
+    ]
+  endif
+  if has('statusline')
+    values += [
+      ['statusline', '"---%f---"', '"' .. &statusline .. '"'],
+    ]
+  endif
+  if has('spell')
+    values += [
+      ['spell', true, false],
+    ]
+  endif
+  if has('syntax')
+    values += [
+      ['cursorcolumn', true, false],
+      ['cursorline', true, false],
+      ['cursorlineopt', '"screenline"', '"' .. &cursorlineopt .. '"'],
+      ['colorcolumn', '"+1"', '"' .. &colorcolumn .. '"'],
+    ]
+  endif
+  if has('diff')
+    values += [
+      ['diff', true, false],
+    ]
+  endif
+  if has('conceal')
+    values += [
+      ['concealcursor', '"nv"', '"' .. &concealcursor .. '"'],
+      ['conceallevel', '3', &conceallevel],
+    ]
+  endif
+  if has('terminal')
+    values += [
+      ['termwinkey', '"<C-X>"', '"' .. &termwinkey .. '"'],
+      ['termwinsize', '"10x20"', '"' .. &termwinsize .. '"'],
+    ]
+  endif
+  if has('folding')
+    values += [
+      ['foldcolumn', 5,  &foldcolumn],
+      ['foldenable', false, true],
+      ['foldexpr', '"2 + 3"', '"' .. &foldexpr .. '"'],
+      ['foldignore', '"+="', '"' .. &foldignore .. '"'],
+      ['foldlevel', 4,  &foldlevel],
+      ['foldmarker', '">>,<<"', '"' .. &foldmarker .. '"'],
+      ['foldmethod', '"marker"', '"' .. &foldmethod .. '"'],
+      ['foldminlines', 3,  &foldminlines],
+      ['foldnestmax', 17,  &foldnestmax],
+      ['foldtext', '"closed"', '"' .. &foldtext .. '"'],
+    ]
+  endif
+  if has('signs')
+    values += [
+      ['signcolumn', '"number"', '"' .. &signcolumn .. '"'],
+    ]
+  endif
+
+  # set options to non-default value
+  for item in values
+    exe $'&l:{item[0]} = {item[1]}'
+  endfor
+
+  # check values are set in new window
+  split
+  for item in values
+    exe $'assert_equal({item[1]}, &{item[0]}, "{item[0]}")'
+  endfor
+
+  # restore
+  close
+  for item in values
+    exe $'&l:{item[0]} = {item[2]}'
+  endfor
+enddef
+
 func Test_shortmess_F()
   new
   call assert_match('\[No Name\]', execute('file'))
@@ -805,6 +916,7 @@ func Test_shortmess_F2()
   call assert_match('file2', execute('bn', ''))
   bwipe
   bwipe
+  call assert_fails('call test_getvalue("abc")', 'E475:')
 endfunc
 
 func Test_local_scrolloff()
@@ -873,7 +985,7 @@ func Test_write()
   new
   call setline(1, ['L1'])
   set nowrite
-  call assert_fails('write Xfile', 'E142:')
+  call assert_fails('write Xwrfile', 'E142:')
   set write
   close!
 endfunc
@@ -887,11 +999,10 @@ func Test_buftype()
 
   for val in ['', 'nofile', 'nowrite', 'acwrite', 'quickfix', 'help', 'terminal', 'prompt', 'popup']
     exe 'set buftype=' .. val
-    call writefile(['something'], 'XBuftype')
+    call writefile(['something'], 'XBuftype', 'D')
     call assert_fails('write XBuftype', 'E13:', 'with buftype=' .. val)
   endfor
 
-  call delete('XBuftype')
   bwipe!
 endfunc
 
@@ -899,7 +1010,6 @@ endfunc
 func Test_rightleftcmd()
   CheckFeature rightleft
   set rightleft
-  set rightleftcmd
 
   let g:l = []
   func AddPos()
@@ -908,6 +1018,13 @@ func Test_rightleftcmd()
   endfunc
   cmap <expr> <F2> AddPos()
 
+  set rightleftcmd=
+  call feedkeys("/\<F2>abc\<Right>\<F2>\<Left>\<Left>\<F2>" ..
+        \ "\<Right>\<F2>\<Esc>", 'xt')
+  call assert_equal([2, 5, 3, 4], g:l)
+
+  let g:l = []
+  set rightleftcmd=search
   call feedkeys("/\<F2>abc\<Left>\<F2>\<Right>\<Right>\<F2>" ..
         \ "\<Left>\<F2>\<Esc>", 'xt')
   call assert_equal([&co - 1, &co - 4, &co - 2, &co - 3], g:l)
@@ -918,17 +1035,21 @@ func Test_rightleftcmd()
   set rightleft&
 endfunc
 
-" Test for the "debug" option
+" Test for the 'debug' option
 func Test_debug_option()
+  " redraw to avoid matching previous messages
+  redraw
   set debug=beep
   exe "normal \<C-c>"
   call assert_equal('Beep!', Screenline(&lines))
+  call assert_equal('line    4:', Screenline(&lines - 1))
+  " only match the final colon in the line that shows the source
+  call assert_match(':$', Screenline(&lines - 2))
   set debug&
 endfunc
 
 " Test for the default CDPATH option
 func Test_opt_default_cdpath()
-  CheckFeature file_in_path
   let after =<< trim [CODE]
     call assert_equal(',/path/to/dir1,/path/to/dir2', &cdpath)
     call writefile(v:errors, 'Xtestout')
@@ -955,6 +1076,18 @@ func Test_opt_set_keycode()
   set <F9>=xyz
   call assert_equal('xyz', &t_k9)
   set <t_k9>&
+
+  " should we test all of them?
+  set t_Ce=testCe
+  set t_Cs=testCs
+  set t_Us=testUs
+  set t_ds=testds
+  set t_Ds=testDs
+  call assert_equal('testCe', &t_Ce)
+  call assert_equal('testCs', &t_Cs)
+  call assert_equal('testUs', &t_Us)
+  call assert_equal('testds', &t_ds)
+  call assert_equal('testDs', &t_Ds)
 endfunc
 
 " Test for changing options in a sandbox
@@ -1096,13 +1229,12 @@ func Test_opt_winminheight_term()
     below sp | wincmd _
     below sp
   END
-  call writefile(lines, 'Xwinminheight')
+  call writefile(lines, 'Xwinminheight', 'D')
   let buf = RunVimInTerminal('-S Xwinminheight', #{rows: 11})
   call term_sendkeys(buf, ":set wmh=1\n")
   call WaitForAssert({-> assert_match('E36: Not enough room', term_getline(buf, 11))})
 
   call StopVimInTerminal(buf)
-  call delete('Xwinminheight')
 endfunc
 
 func Test_opt_winminheight_term_tabs()
@@ -1117,13 +1249,12 @@ func Test_opt_winminheight_term_tabs()
     split
     tabnew
   END
-  call writefile(lines, 'Xwinminheight')
+  call writefile(lines, 'Xwinminheight', 'D')
   let buf = RunVimInTerminal('-S Xwinminheight', #{rows: 11})
   call term_sendkeys(buf, ":set wmh=1\n")
   call WaitForAssert({-> assert_match('E36: Not enough room', term_getline(buf, 11))})
 
   call StopVimInTerminal(buf)
-  call delete('Xwinminheight')
 endfunc
 
 " Test for the 'winminwidth' option
@@ -1152,15 +1283,14 @@ func Test_opt_reset_scroll()
     set scroll=2
     set laststatus=2
   [CODE]
-  call writefile(vimrc, 'Xscroll')
+  call writefile(vimrc, 'Xscroll', 'D')
   let buf = RunVimInTerminal('-S Xscroll', {'rows': 16, 'cols': 45})
   call term_sendkeys(buf, ":verbose set scroll?\n")
   call WaitForAssert({-> assert_match('Last set.*window size', term_getline(buf, 15))})
   call assert_match('^\s*scroll=7$', term_getline(buf, 14))
-  call StopVimInTerminal(buf)
 
   " clean up
-  call delete('Xscroll')
+  call StopVimInTerminal(buf)
 endfunc
 
 " Check that VIM_POSIX env variable influences default value of 'cpo' and 'shm'
@@ -1309,5 +1439,31 @@ func Test_switchbuf_reset()
   call assert_equal(2, winnr('$'))
   only!
 endfunc
+
+" :set empty string for global 'keywordprg' falls back to ":help"
+func Test_keywordprg_empty()
+  let k = &keywordprg
+  set keywordprg=man
+  call assert_equal('man', &keywordprg)
+  set keywordprg=
+  call assert_equal(':help', &keywordprg)
+  set keywordprg=man
+  call assert_equal('man', &keywordprg)
+  call assert_equal("\n  keywordprg=:help", execute('set kp= kp?'))
+  let &keywordprg = k
+endfunc
+
+" check that the very first buffer created does not have 'endoffile' set
+func Test_endoffile_default()
+  let after =<< trim [CODE]
+    call writefile([execute('set eof?')], 'Xtestout')
+    qall!
+  [CODE]
+  if RunVim([], after, '')
+    call assert_equal(["\nnoendoffile"], readfile('Xtestout'))
+  endif
+  call delete('Xtestout')
+endfunc
+
 
 " vim: shiftwidth=2 sts=2 expandtab

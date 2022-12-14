@@ -80,7 +80,7 @@ dnl Check for the flag that fails if stuff are missing.
 AC_MSG_CHECKING(--enable-fail-if-missing argument)
 AC_ARG_ENABLE(fail_if_missing,
 	[  --enable-fail-if-missing    Fail if dependencies on additional features
-     specified on the command line are missing.], 
+     specified on the command line are missing.],
 	[fail_if_missing="yes"],
 	[fail_if_missing="no"])
 AC_MSG_RESULT($fail_if_missing)
@@ -237,7 +237,7 @@ if test "$vim_cv_uname_output" = Darwin; then
   AC_ARG_WITH(developer-dir, [  --with-developer-dir=PATH    use PATH as location for Xcode developer tools],
 	DEVELOPER_DIR="$withval"; AC_MSG_RESULT($DEVELOPER_DIR),
         AC_MSG_RESULT(not present))
-  
+
   if test "x$DEVELOPER_DIR" = "x"; then
     AC_PATH_PROG(XCODE_SELECT, xcode-select)
     if test "x$XCODE_SELECT" != "x"; then
@@ -287,6 +287,8 @@ if test "$vim_cv_uname_output" = Darwin; then
     MACOS_X_DARWIN=yes
     OS_EXTRA_SRC="os_macosx.m os_mac_conv.c";
     OS_EXTRA_OBJ="objects/os_macosx.o objects/os_mac_conv.o"
+    dnl os_macosx.m implements timer_create() and friends
+    AC_DEFINE(HAVE_TIMER_CREATE)
     dnl TODO: use -arch i386 on Intel machines
     dnl Removed -no-cpp-precomp, only for very old compilers.
     CPPFLAGS="$CPPFLAGS -DMACOS_X_DARWIN"
@@ -520,18 +522,22 @@ fi
 dnl Check user requested features.
 
 AC_MSG_CHECKING(--with-features argument)
-AC_ARG_WITH(features, [  --with-features=TYPE    tiny, small, normal, big or huge (default: huge)],
+AC_ARG_WITH(features, [  --with-features=TYPE    tiny, normal or huge (default: huge)],
 	features="$withval"; AC_MSG_RESULT($features),
 	features="huge"; AC_MSG_RESULT(Defaulting to huge))
+
+dnl "small" is supported for backwards compatibility, now an alias for "tiny"
+dnl "big" is supported for backwards compatibility, now an alias for "normal"
+case "$features" in
+  small) features="tiny"   ;;
+  big)   features="normal" ;;
+esac
 
 dovimdiff=""
 dogvimdiff=""
 case "$features" in
   tiny)		AC_DEFINE(FEAT_TINY) ;;
-  small)	AC_DEFINE(FEAT_SMALL) ;;
   normal)	AC_DEFINE(FEAT_NORMAL) dovimdiff="installvimdiff";
-			dogvimdiff="installgvimdiff" ;;
-  big)		AC_DEFINE(FEAT_BIG) dovimdiff="installvimdiff";
 			dogvimdiff="installgvimdiff" ;;
   huge)		AC_DEFINE(FEAT_HUGE) dovimdiff="installvimdiff";
 			dogvimdiff="installgvimdiff" ;;
@@ -541,7 +547,7 @@ esac
 AC_SUBST(dovimdiff)
 AC_SUBST(dogvimdiff)
 
-if test "x$features" = "xtiny" -o "x$features" = "xsmall"; then
+if test "x$features" = "xtiny"; then
   has_eval=no
 else
   has_eval=yes
@@ -575,7 +581,7 @@ else
 fi
 
 AC_MSG_CHECKING([diff feature])
-if test "x$features" = "xtiny" -o "x$features" = "xsmall"; then
+if test "x$features" = "xtiny"; then
   AC_MSG_RESULT([disabled in $features version])
 else
   AC_MSG_RESULT(enabled)
@@ -593,7 +599,7 @@ AC_MSG_RESULT($enable_luainterp)
 
 if test "$enable_luainterp" = "yes" -o "$enable_luainterp" = "dynamic"; then
   if test "$has_eval" = "no"; then
-    AC_MSG_ERROR([cannot use Lua with tiny or small features])
+    AC_MSG_ERROR([cannot use Lua with tiny features])
   fi
 
   dnl -- find the lua executable
@@ -1080,7 +1086,7 @@ AC_ARG_ENABLE(perlinterp,
 AC_MSG_RESULT($enable_perlinterp)
 if test "$enable_perlinterp" = "yes" -o "$enable_perlinterp" = "dynamic"; then
   if test "$has_eval" = "no"; then
-    AC_MSG_ERROR([cannot use Perl with tiny or small features])
+    AC_MSG_ERROR([cannot use Perl with tiny features])
   fi
   AC_SUBST(vi_cv_path_perl)
   AC_PATH_PROG(vi_cv_path_perl, perl)
@@ -1229,7 +1235,7 @@ AC_ARG_ENABLE(pythoninterp,
 AC_MSG_RESULT($enable_pythoninterp)
 if test "$enable_pythoninterp" = "yes" -o "$enable_pythoninterp" = "dynamic"; then
   if test "$has_eval" = "no"; then
-    AC_MSG_ERROR([cannot use Python with tiny or small features])
+    AC_MSG_ERROR([cannot use Python with tiny features])
   fi
 
   dnl -- find the python executable
@@ -1464,7 +1470,7 @@ AC_ARG_ENABLE(python3interp,
 AC_MSG_RESULT($enable_python3interp)
 if test "$enable_python3interp" = "yes" -o "$enable_python3interp" = "dynamic"; then
   if test "$has_eval" = "no"; then
-    AC_MSG_ERROR([cannot use Python with tiny or small features])
+    AC_MSG_ERROR([cannot use Python with tiny features])
   fi
 
   dnl -- find the python3 executable
@@ -1499,36 +1505,36 @@ if test "$enable_python3interp" = "yes" -o "$enable_python3interp" = "dynamic"; 
        if ${vi_cv_path_python3} -c \
            "import sys; sys.exit(${vi_cv_var_python3_version} < 3.2)"
        then
-         vi_cv_var_python3_abiflags=`${vi_cv_path_python3} -c \    
+         vi_cv_var_python3_abiflags=`${vi_cv_path_python3} -c \
            "import sys; print(sys.abiflags)"`
        fi ])
-  
+
       dnl -- find where python3 thinks it was installed
       AC_CACHE_CHECK(Python's install prefix,vi_cv_path_python3_pfx,
       [ vi_cv_path_python3_pfx=`
        ${vi_cv_path_python3} -c \
        "import sys; print(sys.prefix)"` ])
-  
+
       dnl -- and where it thinks it runs
       AC_CACHE_CHECK(Python's execution prefix,vi_cv_path_python3_epfx,
       [ vi_cv_path_python3_epfx=`
        ${vi_cv_path_python3} -c \
        "import sys; print(sys.exec_prefix)"` ])
-  
+
       dnl -- python3's internal library path
-  
+
       AC_CACHE_VAL(vi_cv_path_python3path,
       [ vi_cv_path_python3path=`
        unset PYTHONPATH;
        ${vi_cv_path_python3} -c \
        "import sys, string; print(':'.join(sys.path))"` ])
-  
+
       dnl -- where the Python implementation library archives are
-  
+
       AC_ARG_WITH(python3-config-dir,
        [  --with-python3-config-dir=PATH  Python's config directory (deprecated)],
        [ vi_cv_path_python3_conf="${withval}"; have_python3_config_dir=1 ] )
-  
+
       AC_CACHE_CHECK(Python's configuration directory,vi_cv_path_python3_conf,
       [
        vi_cv_path_python3_conf=
@@ -1550,13 +1556,13 @@ if test "$enable_python3interp" = "yes" -o "$enable_python3interp" = "dynamic"; 
          done
        fi
       ])
-  
+
       PYTHON3_CONFDIR="${vi_cv_path_python3_conf}"
-  
+
       if test "X$PYTHON3_CONFDIR" = "X"; then
         AC_MSG_RESULT([can't find it!])
       else
-  
+
         dnl -- we need to examine Python's config/Makefile too
         dnl    see what the interpreter is built from
         AC_CACHE_VAL(vi_cv_path_python3_plibs,
@@ -1601,7 +1607,7 @@ eof
 	fi
         PYTHON3_SRC="if_python3.c"
         PYTHON3_OBJ="objects/if_python3.o"
-  
+
         dnl On FreeBSD linking with "-pthread" is required to use threads.
         dnl _THREAD_SAFE must be used for compiling then.
         dnl The "-pthread" is added to $LIBS, so that the following check for
@@ -1636,7 +1642,7 @@ eof
         else
           AC_MSG_RESULT(no)
         fi
-  
+
         dnl check that compiling a simple program still works with the flags
         dnl added for Python.
         AC_MSG_CHECKING([if compile and link flags for Python 3 are sane])
@@ -1675,7 +1681,7 @@ AC_SUBST(PYTHON3_SRC)
 AC_SUBST(PYTHON3_OBJ)
 
 dnl if python2.x and python3.x are enabled one can only link in code
-dnl with dlopen(), dlsym(), dlclose() 
+dnl with dlopen(), dlsym(), dlclose()
 if test "$python_ok" = yes && test "$python3_ok" = yes; then
   AC_DEFINE(DYNAMIC_PYTHON)
   AC_DEFINE(DYNAMIC_PYTHON3)
@@ -1693,7 +1699,7 @@ if test "$python_ok" = yes && test "$python3_ok" = yes; then
      * Only the first python version used will be switched on.
      */
 
-    int no_rtl_global_needed_for(char *python_instsoname, char *prefix)
+    static int no_rtl_global_needed_for(char *python_instsoname, char *prefix)
     {
       int needed = 0;
       void* pylib = dlopen(python_instsoname, RTLD_LAZY|RTLD_LOCAL);
@@ -1712,7 +1718,7 @@ if test "$python_ok" = yes && test "$python3_ok" = yes; then
       return !needed;
     }
 
-    int main(int argc, char** argv)
+    int main()
     {
       int not_needed = 0;
       if (no_rtl_global_needed_for("${vi_cv_dll_name_python}", "${vi_cv_path_python_pfx}"))
@@ -1739,7 +1745,7 @@ if test "$python_ok" = yes && test "$python3_ok" = yes; then
      * Only the first python version used will be switched on.
      */
 
-    int no_rtl_global_needed_for(char *python_instsoname, wchar_t *prefix)
+    static int no_rtl_global_needed_for(char *python_instsoname, wchar_t *prefix)
     {
       int needed = 0;
       void* pylib = dlopen(python_instsoname, RTLD_LAZY|RTLD_LOCAL);
@@ -1758,7 +1764,7 @@ if test "$python_ok" = yes && test "$python3_ok" = yes; then
       return !needed;
     }
 
-    int main(int argc, char** argv)
+    int main()
     {
       int not_needed = 0;
       if (no_rtl_global_needed_for("${vi_cv_dll_name_python3}", L"${vi_cv_path_python3_pfx}"))
@@ -1977,7 +1983,7 @@ AC_ARG_ENABLE(rubyinterp,
 AC_MSG_RESULT($enable_rubyinterp)
 if test "$enable_rubyinterp" = "yes" -o "$enable_rubyinterp" = "dynamic"; then
   if test "$has_eval" = "no"; then
-    AC_MSG_ERROR([cannot use Ruby with tiny or small features])
+    AC_MSG_ERROR([cannot use Ruby with tiny features])
   fi
 
   AC_MSG_CHECKING(--with-ruby-command argument)
@@ -1988,7 +1994,7 @@ if test "$enable_rubyinterp" = "yes" -o "$enable_rubyinterp" = "dynamic"; then
   AC_PATH_PROG(vi_cv_path_ruby, $RUBY_CMD)
   if test "X$vi_cv_path_ruby" != "X"; then
     AC_MSG_CHECKING(Ruby version)
-    if $vi_cv_path_ruby -e '(VERSION rescue RUBY_VERSION) >= "1.6.0" or exit 1' >/dev/null 2>/dev/null; then
+    if $vi_cv_path_ruby -e 'RUBY_VERSION >= "1.9.1" or exit 1' >/dev/null 2>/dev/null; then
       AC_MSG_RESULT(OK)
       AC_MSG_CHECKING(Ruby rbconfig)
       ruby_rbconfig="RbConfig"
@@ -2007,7 +2013,7 @@ if test "$enable_rubyinterp" = "yes" -o "$enable_rubyinterp" = "dynamic"; then
         fi
         rubyversion=`$vi_cv_path_ruby -r rbconfig -e "print $ruby_rbconfig::CONFIG[['ruby_version']].gsub(/\./, '')[[0,2]]"`
 	if test "X$rubyversion" = "X"; then
-	  rubyversion=`$vi_cv_path_ruby -e "print ((VERSION rescue RUBY_VERSION)).gsub(/\./, '')[[0,2]]"`
+	  rubyversion=`$vi_cv_path_ruby -e "print RUBY_VERSION.gsub(/\./, '')[[0,2]]"`
 	fi
         RUBY_CFLAGS="$RUBY_CFLAGS -DRUBY_VERSION=$rubyversion"
 	rubylibs=`$vi_cv_path_ruby -r rbconfig -e "print $ruby_rbconfig::CONFIG[['LIBS']]"`
@@ -2028,18 +2034,10 @@ if test "$enable_rubyinterp" = "yes" -o "$enable_rubyinterp" = "dynamic"; then
 	if test "X$librubyarg" != "X"; then
 	  RUBY_LIBS="$librubyarg $RUBY_LIBS"
 	fi
-	rubyldflags=`$vi_cv_path_ruby -r rbconfig -e "print $ruby_rbconfig::CONFIG[['LDFLAGS']]"`
-	if test "X$rubyldflags" != "X"; then
-	  dnl Ruby on Mac OS X 10.5 adds "-arch" flags but these should only
-	  dnl be included if requested by passing --with-mac-arch to
-	  dnl configure, so strip these flags first (if present)
-	  rubyldflags=`echo "$rubyldflags" | sed -e 's/-arch\ ppc//' -e 's/-arch\ i386//' -e 's/-arch\ x86_64//'`
-	  if test "X$rubyldflags" != "X"; then
-	    if test "X`echo \"$LDFLAGS\" | $FGREP -e \"$rubyldflags\"`" = "X"; then
-	      LDFLAGS="$rubyldflags $LDFLAGS"
-	    fi
-	  fi
-	fi
+
+	dnl Here the Ruby LDFLAGS used to be added to LDFLAGS, but that turns
+	dnl out to cause trouble and was removed.
+
 	RUBY_SRC="if_ruby.c"
 	RUBY_OBJ="objects/if_ruby.o"
 	RUBY_PRO="if_ruby.pro"
@@ -2060,7 +2058,7 @@ if test "$enable_rubyinterp" = "yes" -o "$enable_rubyinterp" = "dynamic"; then
 	AC_MSG_RESULT(not found; disabling Ruby)
       fi
     else
-      AC_MSG_RESULT(too old; need Ruby version 1.6.0 or later)
+      AC_MSG_RESULT(too old; need Ruby version 1.9.1 or later)
     fi
   fi
 
@@ -2090,7 +2088,7 @@ AC_ARG_ENABLE(netbeans,
 	, [enable_netbeans="yes"])
 if test "$enable_netbeans" = "yes"; then
   if test "$has_eval" = "no"; then
-    AC_MSG_RESULT([cannot use NetBeans with tiny or small features])
+    AC_MSG_RESULT([cannot use NetBeans with tiny features])
     enable_netbeans="no"
   else
     AC_MSG_RESULT(no)
@@ -2105,7 +2103,7 @@ AC_ARG_ENABLE(channel,
 	, [enable_channel="yes"])
 if test "$enable_channel" = "yes"; then
   if test "$has_eval" = "no"; then
-    AC_MSG_RESULT([cannot use channels with tiny or small features])
+    AC_MSG_RESULT([cannot use channels with tiny features])
     enable_channel="no"
   else
     AC_MSG_RESULT(no)
@@ -2213,7 +2211,7 @@ AC_ARG_ENABLE(terminal,
 	, [enable_terminal="auto"])
 if test "$enable_terminal" = "yes" || test "$enable_terminal" = "auto" -a "x$features" = "xhuge" ; then
   if test "$has_eval" = "no"; then
-    AC_MSG_RESULT([cannot use terminal emulator with tiny or small features])
+    AC_MSG_RESULT([cannot use terminal emulator with tiny features])
     enable_terminal="no"
   else
     if test "$enable_terminal" = "auto"; then
@@ -2260,7 +2258,7 @@ if test "$enable_multibyte" != "yes"; then
 		a problem with this, discuss on the Vim mailing list.])
 fi
 
-dnl Right-to-Left language support for Vim will be included with big features,
+dnl Right-to-Left language support for Vim will be included with huge features,
 dnl unless ENABLE_RIGHTLEFT is undefined.
 AC_MSG_CHECKING(--disable-rightleft argument)
 AC_ARG_ENABLE(rightleft,
@@ -2273,7 +2271,7 @@ else
 	AC_DEFINE(DISABLE_RIGHTLEFT)
 fi
 
-dnl Arabic language support for Vim will be included with big features,
+dnl Arabic language support for Vim will be included with huge features,
 dnl unless ENABLE_ARABIC is undefined.
 AC_MSG_CHECKING(--disable-arabic argument)
 AC_ARG_ENABLE(arabic,
@@ -2418,7 +2416,7 @@ else
 # include <stdlib.h>
 # include <stddef.h>
 #endif
-		main()
+		int main()
 		{
 		  if (sizeof(wchar_t) <= 2)
 		    exit(1);
@@ -3113,7 +3111,7 @@ if test -z "$SKIP_MOTIF"; then
 	AC_CHECK_HEADERS(Xm/Xm.h)
   else
 	AC_CHECK_HEADERS(Xm/Xm.h Xm/XpmP.h Xm/JoinSideT.h Xm/TraitP.h Xm/Manager.h Xm/UnhighlightT.h Xm/Notebook.h)
-  fi    
+  fi
 
   if test "x$ac_cv_header_Xm_XpmP_h" = "xyes"; then
     dnl Solaris uses XpmAttributes_21, very annoying.
@@ -3216,7 +3214,7 @@ AC_CACHE_CHECK([whether toupper is broken], [vim_cv_toupper_broken],
 # include <stdlib.h>
 # include <stddef.h>
 #endif
-main() { exit(toupper('A') == 'A' && tolower('z') == 'z'); }
+int main() { exit(toupper('A') == 'A' && tolower('z') == 'z'); }
   ]])],[
     vim_cv_toupper_broken=yes
   ],[
@@ -3440,7 +3438,7 @@ else
 # include <stdlib.h>
 # include <stddef.h>
 #endif
-main() {char *s; s=(char *)tgoto("%p1%d", 0, 1); exit(0); }])],
+int main() {char *s; s=(char *)tgoto("%p1%d", 0, 1); exit(0); }])],
 			  res="OK", res="FAIL", res="FAIL")
       if test "$res" = "OK"; then
 	break
@@ -3479,7 +3477,7 @@ AC_CACHE_CHECK([whether we talk terminfo], [vim_cv_terminfo],
 # include <stdlib.h>
 # include <stddef.h>
 #endif
-main()
+int main()
 {char *s; s=(char *)tgoto("%p1%d", 0, 1); exit(!strcmp(s==0 ? "" : s, "1")); }
     ]])],[
       vim_cv_terminfo=no
@@ -3505,7 +3503,7 @@ AC_CACHE_CHECK([what tgetent() returns for an unknown terminal], [vim_cv_tgetent
 # include <stdlib.h>
 # include <stddef.h>
 #endif
-main()
+int main()
 {char s[10000]; int res = tgetent(s, "thisterminaldoesnotexist"); exit(res != 0); }
     ]])],[
       vim_cv_tgetent=zero
@@ -3648,7 +3646,7 @@ dnl check if struct sigcontext is defined (used for SGI only)
 AC_MSG_CHECKING(for struct sigcontext)
 AC_COMPILE_IFELSE([AC_LANG_PROGRAM([
 #include <signal.h>
-test_sig()
+int test_sig()
 {
     struct sigcontext *scont;
     scont = (struct sigcontext *)0;
@@ -3668,7 +3666,7 @@ AC_CACHE_CHECK([getcwd implementation is broken], [vim_cv_getcwd_broken],
 #include <unistd.h>
 #endif
 char *dagger[] = { "IFS=pwd", 0 };
-main()
+int main()
 {
   char buffer[500];
   extern char **environ;
@@ -3711,7 +3709,7 @@ AC_ARG_ENABLE(canberra,
 	, [enable_canberra="maybe"])
 
 if test "$enable_canberra" = "maybe"; then
-  if test "$features" = "big" -o "$features" = "huge"; then
+  if test "$features" = "huge"; then
     AC_MSG_RESULT(Defaulting to yes)
     enable_canberra="yes"
   else
@@ -3720,7 +3718,7 @@ if test "$enable_canberra" = "maybe"; then
   fi
 else
   if test "$enable_canberra" = "yes" -a "$has_eval" = "no"; then
-    AC_MSG_RESULT([cannot use sound with tiny or small features])
+    AC_MSG_RESULT([cannot use sound with tiny features])
     enable_canberra="no"
   else
     AC_MSG_RESULT($enable_canberra)
@@ -3757,7 +3755,7 @@ AC_ARG_ENABLE(libsodium,
 	, [enable_libsodium="maybe"])
 
 if test "$enable_libsodium" = "maybe"; then
-  if test "$features" = "big" -o "$features" = "huge"; then
+  if test "$features" = "huge"; then
     AC_MSG_RESULT(Defaulting to yes)
     enable_libsodium="yes"
   else
@@ -3803,13 +3801,17 @@ AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
 	AC_MSG_RESULT(no))
 
 dnl Check for timer_create. It probably requires the 'rt' library.
-AC_MSG_CHECKING([for timer_create])
-save_LIBS="$LIBS"
-LIBS="$LIBS -lrt"
-AC_LINK_IFELSE([AC_LANG_PROGRAM([
-#include<signal.h>
-#include<time.h>
-static void set_flag(union sigval) {}
+dnl Run the program to find out if timer_create(CLOCK_MONOTONIC) actually
+dnl works, on Solaris timer_create() exists but fails at runtime.
+AC_CACHE_CHECK([for timer_create without -lrt], [vim_cv_timer_create], [
+AC_RUN_IFELSE([AC_LANG_PROGRAM([
+#if STDC_HEADERS
+# include <stdlib.h>
+# include <stddef.h>
+#endif
+#include <signal.h>
+#include <time.h>
+static void set_flag(union sigval sv) {}
 ], [
   struct timespec ts;
   struct sigevent action = {0};
@@ -3817,25 +3819,53 @@ static void set_flag(union sigval) {}
 
   action.sigev_notify = SIGEV_THREAD;
   action.sigev_notify_function = set_flag;
-  timer_create(CLOCK_REALTIME, &action, &timer_id);
+  if (timer_create(CLOCK_MONOTONIC, &action, &timer_id) < 0)
+    exit(1);  // cannot create a monotonic timer
   ])],
-  AC_MSG_RESULT(yes; with -lrt); AC_DEFINE(HAVE_TIMER_CREATE),
-  LIBS="$save_LIBS"
-  AC_LINK_IFELSE([AC_LANG_PROGRAM([
-#include<signal.h>
-#include<time.h>
-static void set_flag(union sigval) {}
-    ], [
-    struct timespec ts;
-    struct sigevent action = {0};
-    timer_t timer_id;
+  vim_cv_timer_create=yes,
+  vim_cv_timer_create=no,
+  AC_MSG_WARN([failed to build test program; if cross-compiling please set 'vim_cv_timer_create'])
+  )])
 
-    action.sigev_notify = SIGEV_THREAD;
-    action.sigev_notify_function = set_flag;
-    timer_create(CLOCK_REALTIME, &action, &timer_id);
-    ])],
-    AC_MSG_RESULT(yes); AC_DEFINE(HAVE_TIMER_CREATE),
-    AC_MSG_RESULT(no)))
+dnl If the previous failed, check for timer_create() and linking with -lrt.
+if test "x$vim_cv_timer_create" = "xno" ; then
+  save_LIBS="$LIBS"
+  LIBS="$LIBS -lrt"
+  AC_CACHE_CHECK([for timer_create with -lrt], [vim_cv_timer_create_with_lrt], [
+    AC_RUN_IFELSE([AC_LANG_PROGRAM([
+    #if STDC_HEADERS
+    # include <stdlib.h>
+    # include <stddef.h>
+    #endif
+    #include <signal.h>
+    #include <time.h>
+    static void set_flag(union sigval sv) {}
+    ], [
+      struct timespec ts;
+      struct sigevent action = {0};
+      timer_t timer_id;
+
+      action.sigev_notify = SIGEV_THREAD;
+      action.sigev_notify_function = set_flag;
+      if (timer_create(CLOCK_MONOTONIC, &action, &timer_id) < 0)
+	exit(1);  // cannot create a monotonic timer
+      ])],
+      vim_cv_timer_create_with_lrt=yes,
+      vim_cv_timer_create_with_lrt=no,
+      AC_MSG_WARN([failed to build test program; if cross-compiling please set 'vim_cv_timer_create_with_lrt'])
+    )])
+  LIBS="$save_LIBS"
+else
+  vim_cv_timer_create_with_lrt=no
+fi
+
+if test "x$vim_cv_timer_create" = "xyes" ; then
+  AC_DEFINE(HAVE_TIMER_CREATE)
+fi
+if test "x$vim_cv_timer_create_with_lrt" = "xyes" ; then
+  AC_DEFINE(HAVE_TIMER_CREATE)
+  LIBS="$LIBS -lrt"
+fi
 
 AC_CACHE_CHECK([whether stat() ignores a trailing slash], [vim_cv_stat_ignores_slash],
   [
@@ -3847,7 +3877,7 @@ AC_CACHE_CHECK([whether stat() ignores a trailing slash], [vim_cv_stat_ignores_s
 #endif
 #include <sys/types.h>
 #include <sys/stat.h>
-main() {struct stat st;  exit(stat("configure/", &st) != 0); }
+int main() {struct stat st;  exit(stat("configure/", &st) != 0); }
     ]])],[
       vim_cv_stat_ignores_slash=yes
     ],[
@@ -3885,7 +3915,7 @@ if test $ac_cv_struct_st_mtim_nsec != no; then
   AC_DEFINE_UNQUOTED([ST_MTIM_NSEC], [$ac_cv_struct_st_mtim_nsec],
   [Define if struct stat contains a nanoseconds field])
 fi
-  
+
 dnl Link with iconv for charset translation, if not found without library.
 dnl check for iconv() requires including iconv.h
 dnl Add "-liconv" when possible; Solaris has iconv but use GNU iconv when it
@@ -3918,32 +3948,8 @@ AC_LINK_IFELSE([AC_LANG_PROGRAM([
 	AC_MSG_RESULT(yes); AC_DEFINE(HAVE_NL_LANGINFO_CODESET),
 	AC_MSG_RESULT(no))
 
-dnl Need various functions for floating point support.  Only enable
-dnl floating point when they are all present.
+dnl Floating point support may require the "m" library
 AC_CHECK_LIB(m, strtod)
-AC_MSG_CHECKING([for strtod() and other floating point functions])
-AC_LINK_IFELSE([AC_LANG_PROGRAM([
-#ifdef HAVE_MATH_H
-# include <math.h>
-#endif
-#if STDC_HEADERS
-# include <stdlib.h>
-# include <stddef.h>
-#endif
-], [char *s; double d;
-    d = strtod("1.1", &s);
-    d = fabs(1.11);
-    d = ceil(1.11);
-    d = floor(1.11);
-    d = log10(1.11);
-    d = pow(1.11, 2.22);
-    d = sqrt(1.11);
-    d = sin(1.11);
-    d = cos(1.11);
-    d = atan(1.11);
-    ])],
-	AC_MSG_RESULT(yes); AC_DEFINE(HAVE_FLOAT_FUNCS),
-	AC_MSG_RESULT(no))
 
 dnl isinf() and isnan() need to include header files and may need -lm.
 AC_MSG_CHECKING([for isinf()])
@@ -4236,7 +4242,7 @@ AC_RUN_IFELSE([AC_LANG_SOURCE([
 #ifdef HAVE_INTTYPES_H
 # include <inttypes.h>
 #endif
-main() {
+int main() {
   uint32_t nr1 = (uint32_t)-1;
   uint32_t nr2 = (uint32_t)0xffffffffUL;
   if (sizeof(uint32_t) != 4 || nr1 != 0xffffffffUL || nr2 + 1 != 0) return 1;
@@ -4258,7 +4264,7 @@ dnl present, fixes problem with incompatibility between Solaris 2.4 and 2.5.
 # include <stdlib.h>
 # include <stddef.h>
 #endif
-main() {
+int main() {
   char buf[10];
   strcpy(buf, "abcdefghi");
   mch_memmove(buf, buf + 2, 3);
@@ -4422,7 +4428,7 @@ if test "$enable_nls" = "yes"; then
     else
       AC_MSG_RESULT([msgfmt not found - disabled]);
     fi
-    if test $have_gettext = "yes" -a "x$features" != "xtiny" -a "x$features" != "xsmall"; then
+    if test $have_gettext = "yes" -a "x$features" != "xtiny"; then
       AC_DEFINE(HAVE_GETTEXT)
       MAKEMO=yes
       AC_SUBST(MAKEMO)
@@ -4539,7 +4545,7 @@ if test "$MACOS_X" = "yes"; then
   AC_MSG_CHECKING([whether we need macOS frameworks])
   if test "$MACOS_X_DARWIN" = "yes"; then
     if test "$features" = "tiny"; then
-      dnl Since no FEAT_CLIPBOARD, no longer need for os_macosx.m.
+      dnl Since no FEAT_CLIPBOARD or FEAT_SOUND, no need for os_macosx.m.
       OS_EXTRA_SRC=`echo "$OS_EXTRA_SRC" | sed -e 's+os_macosx.m++'`
       OS_EXTRA_OBJ=`echo "$OS_EXTRA_OBJ" | sed -e 's+objects/os_macosx.o++'`
       AC_MSG_RESULT([yes, we need CoreServices])
